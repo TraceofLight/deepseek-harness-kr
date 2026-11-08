@@ -24,7 +24,14 @@ export type AvatarProfile = {
   /** 재질 이름 → MToon 설정 (텍스처는 폴더 기준 상대 경로) */
   materials?: Record<string, { map?: string; shade?: string; ao?: string; aoScale?: number;
     /** UTS HighColor(스페큘러 하이라이트): color = 색, power = 날카로움(0~1, UTS _HighColor_Power), mask = 마스크 맵, onShadow = 그림자 쪽 세기, strength = 전체 세기(장면 빛 세기 보정), toon = 경계가 딱 떨어지는 툰 모드(UTS 스페큘러 끔) */
-    highColor?: { color: string; power?: number; mask?: string; onShadow?: number; strength?: number; toon?: boolean }; alphaTest?: number; transparent?: boolean; shadingShift?: number; shadingToony?: number; hidden?: boolean; doubleSided?: boolean }>;
+    highColor?: { color: string; power?: number; mask?: string; onShadow?: number; strength?: number; toon?: boolean }; alphaTest?: number; transparent?: boolean; shadingShift?: number; shadingToony?: number; hidden?: boolean; doubleSided?: boolean;
+    /**
+     * 스텐실 (Unity 재질의 Stencil 설정 옮김): write = 그린 곳에 ref를 씀, test = ref와 비교해 맞는 곳에만 그림
+     * 예: 눈썹이 ref 4를 쓰고 앞머리가 notEqual 4로 그리면 눈썹이 앞머리 위로 비침
+     */
+    stencil?: { ref: number; write?: boolean; test?: "equal" | "notEqual" };
+    /** 그리는 순서 (작을수록 먼저, 기본 0). 스텐실을 쓰는 재질이 읽는 재질보다 먼저 그려지게 할 때 */
+    order?: number }>;
   /** 사람형 뼈 → 모델 뼈 이름 */
   bones: Partial<Record<HumanBone, string>>;
   /** 의미 채널(PARAMS 키, 모음은 mouthVowel.A 등) → 모프 대응 */
@@ -155,6 +162,41 @@ function outlineGeometry(source: THREE.BufferGeometry, tolerance: number) {
   return geometry;
 }
 
+/** 외곽선 메시 그리는 순서 (스텐실로 비친 부분을 덮지 않게 모든 재질 뒤) */
+const OUTLINE_ORDER = 100;
+const STENCIL_FUNCS = { equal: THREE.EqualStencilFunc, notEqual: THREE.NotEqualStencilFunc } as const;
+/** 재질에 스텐실 쓰기·검사 설정 */
+export function applyStencil(material: THREE.Material, stencil: { ref: number; write?: boolean; test?: "equal" | "notEqual" }) {
+  material.stencilWrite = true;   // three.js는 이 값이 켜져야 스텐실 검사도 함
+  material.stencilRef = stencil.ref;
+  material.stencilFunc = stencil.test ? STENCIL_FUNCS[stencil.test] : THREE.AlwaysStencilFunc;
+  material.stencilZPass = stencil.write ? THREE.ReplaceStencilOp : THREE.KeepStencilOp;
+}
+/**
+ * 여러 재질 메시에서 순서(order)가 0이 아닌 재질을 같은 지오메트리·뼈·모프 배열을 쓰는 복제 메시로 떼어 renderOrder로 그림
+ * (three.js는 한 메시 안 재질 순서를 정할 수 없어서)
+ * @param orderOf 재질 이름 → 순서
+ */
+export function splitByOrder(root: THREE.Object3D, orderOf: (name: string) => number, life: { add(fn: () => void): void }) {
+  const skip = new THREE.MeshBasicMaterial({ visible: false });
+  life.add(() => skip.dispose());
+  const meshes: THREE.SkinnedMesh[] = [];
+  root.traverse((node) => { const mesh = node as THREE.SkinnedMesh; if (mesh.isSkinnedMesh && Array.isArray(mesh.material) && !mesh.name.endsWith("__outline")) meshes.push(mesh); });
+  for (const mesh of meshes) {
+    const materials = mesh.material as THREE.Material[];
+    const orders = [...new Set(materials.map((material) => orderOf(material.name)).filter((order) => order !== 0))];
+    for (const order of orders) {
+      const part = new THREE.SkinnedMesh(mesh.geometry, materials.map((material) => orderOf(material.name) === order ? material : skip));
+      part.bind(mesh.skeleton, mesh.bindMatrix);
+      part.morphTargetInfluences = mesh.morphTargetInfluences; part.morphTargetDictionary = mesh.morphTargetDictionary;
+      part.frustumCulled = false; part.renderOrder = order; part.name = mesh.name + "__order" + order;
+      part.position.copy(mesh.position); part.quaternion.copy(mesh.quaternion); part.scale.copy(mesh.scale);
+      mesh.parent!.add(part);
+    }
+    if (orders.length) mesh.material = materials.map((material) => orderOf(material.name) === 0 ? material : skip);
+  }
+}
+
 /**
  * 겹치면 깨지는 모프 묶음의 합을 1 이하로: 묶음 앞쪽부터 남은 몫 안에서만 씀
  * @param weights 모프 이름 → 세기 (바로 고침)
@@ -224,8 +266,8 @@ export function createSprings(specs: SpringSpec[]) {
       const child = node.children.find((each) => (each as THREE.Bone).isBone);
       if (!child || child.position.lengthSq() < 1e-12) return;
       const tail = child.getWorldPosition(new THREE.Vector3()), radius = spec.radius ?? 0;
-      // 기본 자세에서 이미 충돌 거리보다 가까운 뼈는 그 처음 거리까지만 막음 (기본 모양은 그대로, 더 파고들 때만 밀어냄)
-      const colliders = (spec.colliders || []).map((collider) => { colliderEnds(collider, colliderA, colliderB); return { collider, distance: Math.min(collider.radius + radius, capsuleDistance(tail, colliderA, colliderB) * 0.98) }; });
+      // 충돌 거리는 늘 충돌체 반지름 + 뼈 반지름 (기본 자세에서 가까운 뼈도 표면 밖으로 밀어 냄. 처음 거리로 줄이면 자세에 따라 파고듦)
+      const colliders = (spec.colliders || []).map((collider) => ({ collider, distance: collider.radius + radius }));
       joints.push({ node, restLocal: node.quaternion.clone(), axis: child.position.clone().normalize(), length: tail.distanceTo(node.getWorldPosition(head)),
         prev: tail.clone(), tail, stiffness: spec.stiffness ?? 1, drag: spec.drag ?? 0.4, gravity: spec.gravity ?? 0, colliders });
     });
@@ -279,7 +321,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
   const root = await loader.loadAsync(base + profile.model);
   if (life.stopped) return null;
 
-  const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, premultipliedAlpha: true });
+  const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, premultipliedAlpha: true, stencil: true });   // 스텐실(눈썹이 앞머리 위로 비침)에 필요, three.js 기본은 꺼짐
   renderer.setClearColor(0x000000, 0);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   const scene = new THREE.Scene();
@@ -386,6 +428,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
       const sdf = !!profile.faceSdf && profile.faceSdf.material === material.name;
       if (sdf || spec.highColor) extendMToon(toon, { sdf, highColor: spec.highColor });
       toon.visible = !spec.hidden;
+      if (spec.stencil) applyStencil(toon, spec.stencil);
       material.dispose();
       return toon;
     };
@@ -408,6 +451,8 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
         ...((source as MToonMaterial).map ? { map: (source as MToonMaterial).map! } : {}),
       });
       material.visible = source.visible && !skip.has(source.name);
+      const stencil = profile.materials?.[source.name]?.stencil;
+      if (stencil?.test) applyStencil(material, { ref: stencil.ref, test: stencil.test });   // 앞머리 외곽선도 비친 눈썹을 덮지 않게
       if (vertexWidth) {
         const mtoonCompile = material.onBeforeCompile.bind(material);
         material.onBeforeCompile = (shader, renderer) => {
@@ -437,7 +482,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
         if (color) own.geometry.setAttribute("outlineWidth", new THREE.BufferAttribute(Float32Array.from({ length: color.count }, (_, i) => color.getX(i)), 1));
         const ownMaterials = ([] as THREE.Material[]).concat(own.material).map((_, i) => outlineMaterial(materials[Math.min(i, materials.length - 1)], !!color));
         own.material = Array.isArray(own.material) ? ownMaterials : ownMaterials[0];
-        own.visible = true; own.frustumCulled = false; own.renderOrder = -1;
+        own.visible = true; own.frustumCulled = false; own.renderOrder = OUTLINE_ORDER;
         for (let node: THREE.Object3D | null = own.parent; node && node !== root; node = node.parent) node.visible = true;
         used.add(own);
         continue;
@@ -449,13 +494,16 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
       outline.bind(mesh.skeleton, mesh.bindMatrix);
       outline.morphTargetInfluences = mesh.morphTargetInfluences;   // 같은 배열을 써서 표정·옷 모프를 그대로 따름
       outline.morphTargetDictionary = mesh.morphTargetDictionary;
-      outline.frustumCulled = false; outline.renderOrder = -1;
+      outline.frustumCulled = false; outline.renderOrder = OUTLINE_ORDER;
       outline.name = mesh.name + "__outline";
       mesh.parent!.add(outline);
       outline.position.copy(mesh.position); outline.quaternion.copy(mesh.quaternion); outline.scale.copy(mesh.scale);
     }
     for (const mesh of authored.values()) if (!used.has(mesh)) mesh.visible = false;
   }
+
+  // ---------- 그리는 순서: order가 있는 재질은 같은 뼈·모프를 쓰는 복제 메시로 떼어 그 순서로 그림 ----------
+  splitByOrder(root, (name) => profile.materials?.[name]?.order ?? 0, life);
 
   // ---------- 뼈 ----------
   const byName = new Map<string, THREE.Object3D>();
@@ -592,8 +640,9 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
     ["legs", "leftUpperLeg", "rightUpperLeg", 0.035],
     ["legs", "leftUpperLeg", "leftLowerLeg", 0.045], ["legs", "rightUpperLeg", "rightLowerLeg", 0.045],
     ["legs", "leftLowerLeg", "leftFoot", 0.03], ["legs", "rightLowerLeg", "rightFoot", 0.03],
-    ["arms", "leftUpperArm", "leftLowerArm", 0.022], ["arms", "rightUpperArm", "rightLowerArm", 0.022],
-    ["arms", "leftLowerArm", "leftHand", 0.018], ["arms", "rightLowerArm", "rightHand", 0.018],
+    // 팔은 소매(걷어 올린 셔츠) 두께까지
+    ["arms", "leftUpperArm", "leftLowerArm", 0.03], ["arms", "rightUpperArm", "rightLowerArm", 0.03],
+    ["arms", "leftLowerArm", "leftHand", 0.026], ["arms", "rightLowerArm", "rightHand", 0.026],
   ];
   const collidersOf = (groups: ColliderGroup[] = []) => COLLIDERS.filter(([group, from]) => groups.includes(group) && bone(from)).map(([, from, to, ratio, offset]): SpringCollider =>
     ({ from: bone(from)!, to: to ? bone(to) : null, fromOffset: offset, radius: ratio * fullH * colliderScale }));

@@ -91,7 +91,7 @@ test('충돌체 안의 점은 캡슐·구 표면 밖으로 밀려나고, 밖의 
   assert.ok(Math.abs(sphere.length() - 1) < 1e-9, '구는 중심에서 반지름만큼')
 })
 
-test('흔들림 뼈는 움직이는 충돌체를 뚫지 않고, 처음부터 가까운 충돌체는 그 거리까지만 막는다', async () => {
+test('흔들림 뼈는 움직이는 충돌체를 뚫지 않고, 처음부터 가까운 충돌체에서도 표면 밖으로 밀려난다', async () => {
   const THREE = await import('three')
   const { createSprings } = await import('../../character/rig-three.ts')
   const scene = new THREE.Object3D(), hair0 = new THREE.Bone(), hair1 = new THREE.Bone(), leg = new THREE.Bone(), inner = new THREE.Bone()
