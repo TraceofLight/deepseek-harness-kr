@@ -103,6 +103,8 @@ export const Config = z.object({
   canvasToggleKey: z.string().default('Ctrl+Shift+H').volatile(),
   // 실험: 3D 모델 폴더(절대 경로, avatar.json과 모델 파일). 비우면 기본 Live2D 캐릭터. 모델은 배포하지 않고 사용자 폴더에서만 읽는다
   avatarModelDir: z.string().default('').volatile(),
+  // 실험: 3D 외곽선 법선. smooth = 같은 위치 법선 평균(기본), model = 모델에 든 외곽선 메시(다듬은 법선·두께)
+  avatarOutline: z.union([z.const('smooth'), z.const('model')]).default('smooth').volatile(),
 })
 export const ASSET_PATH = '/deepseek-harness-kr/assets'
 /** 호스트 쪽 진단 상태 조회 경로 (설정 화면이 시작 후 한 번 읽어 콘솔에 남김) */

@@ -72,3 +72,38 @@ test('외곽선 법선은 같은 위치 정점끼리 평균내 각진 경계에�
   const flat = smoothOutlineNormals([0, 0, 0, 0, 0, 0], [0, 0, 1, 0, 0, -1])
   assert.deepEqual(Array.from(flat), [0, 0, 1, 0, 0, -1])
 })
+
+test('충돌체 안의 점은 캡슐·구 표면 밖으로 밀려나고, 밖의 점은 그대로다', async () => {
+  const THREE = await import('three')
+  const { pushOutOfCapsule } = await import('../../character/rig-three.ts')
+  const a = new THREE.Vector3(0, 0, 0), b = new THREE.Vector3(0, 10, 0)
+  const inside = new THREE.Vector3(0.5, 5, 0)
+  assert.equal(pushOutOfCapsule(inside, a, b, 2), true)
+  assert.ok(inside.distanceTo(new THREE.Vector3(2, 5, 0)) < 1e-9, '캡슐 옆면 수직 방향으로')
+  const outside = new THREE.Vector3(3, 5, 0)
+  assert.equal(pushOutOfCapsule(outside, a, b, 2), false)
+  assert.deepEqual(outside.toArray(), [3, 5, 0])
+  const capEnd = new THREE.Vector3(0, -1, 0)
+  pushOutOfCapsule(capEnd, a, b, 2)
+  assert.ok(Math.abs(capEnd.y + 2) < 1e-9, '끝은 반구 방향으로')
+  const sphere = new THREE.Vector3(0, 0, 0.5)
+  pushOutOfCapsule(sphere, a, a.clone(), 1)
+  assert.ok(Math.abs(sphere.length() - 1) < 1e-9, '구는 중심에서 반지름만큼')
+})
+
+test('흔들림 뼈는 움직이는 충돌체를 뚫지 않고, 처음부터 가까운 충돌체는 그 거리까지만 막는다', async () => {
+  const THREE = await import('three')
+  const { createSprings } = await import('../../character/rig-three.ts')
+  const scene = new THREE.Object3D(), hair0 = new THREE.Bone(), hair1 = new THREE.Bone(), leg = new THREE.Bone(), inner = new THREE.Bone()
+  hair1.position.set(0, -1, 0); hair0.add(hair1); scene.add(hair0)
+  leg.position.set(1.5, -1, 0); scene.add(leg)          // 끝점(0,-1,0)에서 1.5 떨어진 구
+  inner.position.set(0, -1.3, 0); scene.add(inner)      // 처음부터 끝점과 0.3 거리 (충돌 거리 0.6보다 가까움)
+  scene.updateMatrixWorld(true)
+  const springs = createSprings([{ roots: [hair0], stiffness: 0.5, drag: 0.4, radius: 0.1, colliders: [{ from: leg, radius: 0.5 }, { from: inner, radius: 0.5 }] }])
+  for (let i = 0; i < 240; i++) {
+    leg.position.x = 1.5 - Math.min(1.5, i * 0.02)        // 구가 머리카락 쪽으로 들어옴
+    scene.updateMatrixWorld(true); springs.step(1 / 60)
+    const tip = hair1.getWorldPosition(new THREE.Vector3())
+    assert.ok(tip.distanceTo(leg.position) >= 0.6 - 0.02, `${i}프레임: 끝점이 충돌체 안으로 들어감`)
+  }
+})

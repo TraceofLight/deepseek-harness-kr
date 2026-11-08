@@ -39,8 +39,11 @@ export type AvatarProfile = {
   armDown?: number;
   /** 지원하는 기능 (기본은 없음) */
   features?: RigFeature[];
-  /** 외곽선 (MToon 외곽선): width = 모델 키 대비 두께, color = 선 색, skip = 외곽선을 빼는 재질 이름 */
-  outline?: { width: number; color?: string; skip?: string[] };
+  /**
+   * 외곽선 (MToon 외곽선): width = 모델 키 대비 두께, color = 선 색, skip = 외곽선을 빼는 재질 이름
+   * normals = smooth(같은 위치 법선 평균, 기본) 또는 model(모델에 든 "<메시>_Outline" 메시의 다듬은 법선과 정점 색 R 두께 배율)
+   */
+  outline?: { width: number; color?: string; skip?: string[]; normals?: OutlineNormals };
   /**
    * 얼굴 SDF 그림자: 빛이 얼굴 정면에서 돌아간 각도를 문턱값으로 SDF 맵을 잘라 얼굴 그림자 경계를 정함
    * material = 적용할 재질 이름, map = SDF 맵(R·G = 양쪽 빛용 문턱값), swap = R·G가 맡는 쪽을 바꿈, softness = 경계 부드러움
@@ -53,9 +56,15 @@ export type AvatarProfile = {
   /** 몸 애니메이션 (폴더 기준 FBX): idle = 대기 반복 클립, gestures = 몸짓 이름(동작 코드의 play) → 클립 */
   animations?: { idle?: string; gestures?: Record<string, string> };
   /** 흔들림(스프링) 사슬: roots 아래 모든 뼈. stiffness = 제자리로 돌아오는 힘, drag = 감쇠(0~1), gravity = 아래로 끄는 힘 */
-  springs?: Array<{ roots: string[]; stiffness?: number; drag?: number; gravity?: number }>;
+  springs?: Array<{ roots: string[]; stiffness?: number; drag?: number; gravity?: number; radius?: number; colliders?: ColliderGroup[] }>;
+  /** 흔들림 충돌체: 사람형 뼈로 자동 생성. scale = 반지름 배율 (기본 1) */
+  colliders?: { scale?: number };
 };
 
+/** 외곽선 법선 출처 */
+export type OutlineNormals = "smooth" | "model";
+/** 자동 충돌체 묶음 (흔들림 사슬마다 부딪힐 묶음을 고름) */
+export type ColliderGroup = "head" | "body" | "arms" | "legs";
 const DEG = Math.PI / 180;
 /** 값 자르기 */
 const clamp = (value: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, value));
@@ -118,6 +127,17 @@ export function smoothOutlineNormals(positions: ArrayLike<number>, normals: Arra
 }
 
 /**
+ * 두 지오메트리의 정점 위치가 모두 같은지 (작가 외곽선 메시가 본체와 같은 모양일 때만 쓰기 위함)
+ * @param tolerance 같은 위치로 볼 거리
+ */
+function samePositions(a: THREE.BufferGeometry, b: THREE.BufferGeometry, tolerance: number) {
+  const p = a.getAttribute("position"), q = b.getAttribute("position");
+  if (!p || !q || p.count !== q.count) return false;
+  for (let i = 0; i < p.count; i++) if (Math.abs(p.getX(i) - q.getX(i)) > tolerance || Math.abs(p.getY(i) - q.getY(i)) > tolerance || Math.abs(p.getZ(i) - q.getZ(i)) > tolerance) return false;
+  return true;
+}
+
+/**
  * 외곽선 메시용 지오메트리: 위치·스킨·UV·모프 위치는 원본과 공유하고 법선만 매끄러운 외곽선 법선으로 바꿈
  * 모프 법선은 빼서 표정 모프가 외곽선 방향을 흔들지 않게 함
  */
@@ -133,15 +153,51 @@ function outlineGeometry(source: THREE.BufferGeometry, tolerance: number) {
   return geometry;
 }
 
-/** 흔들림 사슬 하나의 설정: roots 아래 모든 뼈. stiffness = 제자리로 돌아오는 힘, drag = 감쇠(0~1), gravity = 아래로 끄는 힘 */
-export type SpringSpec = { roots: THREE.Object3D[]; stiffness?: number; drag?: number; gravity?: number };
+/**
+ * 충돌체 (캡슐, to가 없으면 구): from·to 뼈의 지역 좌표 offset 지점을 잇는 선분에서 radius 안으로 흔들림 뼈 끝점이 못 들어옴
+ */
+export type SpringCollider = { from: THREE.Object3D; to?: THREE.Object3D | null; fromOffset?: THREE.Vector3; toOffset?: THREE.Vector3; radius: number };
+/**
+ * 흔들림 사슬 하나의 설정: roots 아래 모든 뼈. stiffness = 제자리로 돌아오는 힘, drag = 감쇠(0~1), gravity = 아래로 끄는 힘
+ * radius = 뼈 끝점의 반지름(모델 단위), colliders = 부딪힐 충돌체
+ */
+export type SpringSpec = { roots: THREE.Object3D[]; stiffness?: number; drag?: number; gravity?: number; radius?: number; colliders?: SpringCollider[] };
+const colliderA = new THREE.Vector3(), colliderB = new THREE.Vector3(), colliderAB = new THREE.Vector3(), colliderP = new THREE.Vector3();
+/**
+ * 점이 충돌체 안이면 표면 밖으로 밀어낸 위치로 바꿈 (선분에서 가장 가까운 점 기준)
+ * @param point 바꿀 점 (월드)
+ * @param a·b 충돌체 선분 양 끝 (월드, 구면 a = b)
+ * @param distance 떨어져 있어야 할 거리 (충돌체 반지름 + 뼈 반지름)
+ * @returns 밀어냈으면 true
+ */
+export function pushOutOfCapsule(point: THREE.Vector3, a: THREE.Vector3, b: THREE.Vector3, distance: number) {
+  colliderAB.copy(b).sub(a);
+  const len2 = colliderAB.lengthSq(), t = len2 > 1e-12 ? clamp(colliderP.copy(point).sub(a).dot(colliderAB) / len2, 0, 1) : 0;
+  const closest = colliderP.copy(a).addScaledVector(colliderAB, t);
+  const away = point.clone().sub(closest), d = away.length();
+  if (d >= distance) return false;
+  if (d < 1e-9) away.set(0, 1, 0); else away.divideScalar(d);
+  point.copy(closest).addScaledVector(away, distance);
+  return true;
+}
+/** 점과 선분 사이 거리 */
+export const capsuleDistance = (point: THREE.Vector3, a: THREE.Vector3, b: THREE.Vector3) => {
+  colliderAB.copy(b).sub(a);
+  const len2 = colliderAB.lengthSq(), t = len2 > 1e-12 ? clamp(colliderP.copy(point).sub(a).dot(colliderAB) / len2, 0, 1) : 0;
+  return point.distanceTo(colliderP.copy(a).addScaledVector(colliderAB, t));
+};
+/** 충돌체의 지금 선분 양 끝 (월드) */
+const colliderEnds = (collider: SpringCollider, a: THREE.Vector3, b: THREE.Vector3) => {
+  a.copy(collider.fromOffset || new THREE.Vector3()).applyMatrix4(collider.from.matrixWorld);
+  if (collider.to) b.copy(collider.toOffset || new THREE.Vector3()).applyMatrix4(collider.to.matrixWorld); else b.copy(a);
+};
 /**
  * 흔들림(스프링) 뼈 준비: 뼈마다 끝점(자식 뼈 위치)이 관성·복원력·중력으로 따라가고, 뼈를 끝점 쪽으로 돌림 (VRM 스프링 본과 같은 방식)
  * 힘은 뼈 길이에 비례해 모델 단위(cm·m)와 무관. 부르기 전에 뼈의 월드 행렬이 지금 자세로 갱신돼 있어야 함
  * @returns step(dt): 사슬 위쪽부터 한 프레임 진행
  */
 export function createSprings(specs: SpringSpec[]) {
-  type Joint = { node: THREE.Object3D; restLocal: THREE.Quaternion; axis: THREE.Vector3; length: number; prev: THREE.Vector3; tail: THREE.Vector3; stiffness: number; drag: number; gravity: number };
+  type Joint = { node: THREE.Object3D; restLocal: THREE.Quaternion; axis: THREE.Vector3; length: number; prev: THREE.Vector3; tail: THREE.Vector3; stiffness: number; drag: number; gravity: number; colliders: Array<{ collider: SpringCollider; distance: number }> };
   const joints: Joint[] = [];
   const head = new THREE.Vector3(), restDir = new THREE.Vector3(), next = new THREE.Vector3(), inertia = new THREE.Vector3(), turn = new THREE.Quaternion(), parentQ = new THREE.Quaternion();
   for (const spec of specs) for (const root of spec.roots) {
@@ -149,9 +205,11 @@ export function createSprings(specs: SpringSpec[]) {
     root.traverse((node) => {
       const child = node.children.find((each) => (each as THREE.Bone).isBone);
       if (!child || child.position.lengthSq() < 1e-12) return;
-      const tail = child.getWorldPosition(new THREE.Vector3());
+      const tail = child.getWorldPosition(new THREE.Vector3()), radius = spec.radius ?? 0;
+      // 기본 자세에서 이미 충돌 거리보다 가까운 뼈는 그 처음 거리까지만 막음 (기본 모양은 그대로, 더 파고들 때만 밀어냄)
+      const colliders = (spec.colliders || []).map((collider) => { colliderEnds(collider, colliderA, colliderB); return { collider, distance: Math.min(collider.radius + radius, capsuleDistance(tail, colliderA, colliderB) * 0.98) }; });
       joints.push({ node, restLocal: node.quaternion.clone(), axis: child.position.clone().normalize(), length: tail.distanceTo(node.getWorldPosition(head)),
-        prev: tail.clone(), tail, stiffness: spec.stiffness ?? 1, drag: spec.drag ?? 0.4, gravity: spec.gravity ?? 0 });
+        prev: tail.clone(), tail, stiffness: spec.stiffness ?? 1, drag: spec.drag ?? 0.4, gravity: spec.gravity ?? 0, colliders });
     });
   }
   return {
@@ -169,6 +227,13 @@ export function createSprings(specs: SpringSpec[]) {
         next.copy(joint.tail).add(inertia).addScaledVector(restDir, joint.stiffness * dt * joint.length * 10);
         next.y -= joint.gravity * dt * joint.length * 10;
         next.sub(head).normalize().multiplyScalar(joint.length).add(head);   // 뼈 길이 유지
+        // 밀어낸 뒤 길이를 맞추면 다시 안으로 들어갈 수 있어 몇 번 반복해 수렴시킴
+        for (let pass = 0; pass < 4; pass++) {
+          let pushed = false;
+          for (const { collider, distance } of joint.colliders) { colliderEnds(collider, colliderA, colliderB); pushed = pushOutOfCapsule(next, colliderA, colliderB, distance) || pushed; }
+          if (!pushed) break;
+          next.sub(head).normalize().multiplyScalar(joint.length).add(head);
+        }
         joint.prev.copy(joint.tail); joint.tail.copy(next);
         turn.setFromUnitVectors(restDir, next.clone().sub(head).normalize());
         node.quaternion.copy(parentQ.clone().invert().multiply(turn).multiply(parentQ).multiply(joint.restLocal));
@@ -184,10 +249,13 @@ export function createSprings(specs: SpringSpec[]) {
  * @param pet 펫 창(전신)이면 true, 창 안(상반신)이면 false
  * @returns rig, 불러오는 사이 꺼졌으면 null
  */
-export async function createThreeRig({ base, life, canvas, W, H, pet }: {
+export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNormals }: {
   base: string; life: Lifetime; canvas: HTMLCanvasElement; W: number; H: number; pet: boolean;
+  /** 외곽선 법선 출처 (설정 드롭다운, 없으면 avatar.json 값) */
+  outlineNormals?: OutlineNormals;
 }): Promise<AvatarRig | null> {
   const profile = await (await fetch(base + "avatar.json")).json() as AvatarProfile;
+  if (profile.outline && outlineNormals) profile.outline.normals = outlineNormals;
   const textureLoader = new THREE.TextureLoader();
   const loader = new FBXLoader();
   const root = await loader.loadAsync(base + profile.model);
@@ -310,7 +378,11 @@ export async function createThreeRig({ base, life, canvas, W, H, pet }: {
   if (profile.outline) {
     const height = new THREE.Box3().setFromObject(root).getSize(new THREE.Vector3()).y;
     const skip = new Set(profile.outline.skip || []);
-    const outlineMaterial = (source: THREE.Material) => {
+    /**
+     * 외곽선 재질 (원본 재질의 투명 처리·텍스처를 따름)
+     * @param vertexWidth true면 정점 속성 outlineWidth를 두께에 곱함 (모델 제공 외곽선의 정점 색 R)
+     */
+    const outlineMaterial = (source: THREE.Material, vertexWidth = false) => {
       const material = new MToonMaterial({
         isOutline: true, outlineWidthMode: "worldCoordinates", outlineWidthFactor: profile.outline!.width * height,
         outlineColorFactor: new THREE.Color(profile.outline!.color || "#2b2430"), outlineLightingMixFactor: 0.3, side: THREE.BackSide,
@@ -318,16 +390,44 @@ export async function createThreeRig({ base, life, canvas, W, H, pet }: {
         ...((source as MToonMaterial).map ? { map: (source as MToonMaterial).map! } : {}),
       });
       material.visible = source.visible && !skip.has(source.name);
+      if (vertexWidth) {
+        const mtoonCompile = material.onBeforeCompile.bind(material);
+        material.onBeforeCompile = (shader, renderer) => {
+          mtoonCompile(shader, renderer);
+          shader.vertexShader = "attribute float outlineWidth;\n" + shader.vertexShader.replace("vec3 outlineOffset = outlineWidthFactor * worldNormalLength * objectNormal;", "vec3 outlineOffset = outlineWidthFactor * outlineWidth * worldNormalLength * objectNormal;");
+        };
+        const key = material.customProgramCacheKey.bind(material);
+        material.customProgramCacheKey = () => key() + "|outlineWidth";
+      }
       life.add(() => material.dispose());
       return material;
     };
-    const meshes: THREE.SkinnedMesh[] = [];
-    root.traverse((node) => { const mesh = node as THREE.SkinnedMesh; if (mesh.isSkinnedMesh && mesh.visible && !hidden.has(mesh.parent?.name || "")) meshes.push(mesh); });
+    const meshes: THREE.SkinnedMesh[] = [], authored = new Map<string, THREE.SkinnedMesh>();
+    root.traverse((node) => {
+      const mesh = node as THREE.SkinnedMesh;
+      if (!mesh.isSkinnedMesh) return;
+      if (mesh.name.endsWith("_Outline")) authored.set(mesh.name, mesh);
+      else if (mesh.visible && !hidden.has(mesh.parent?.name || "")) meshes.push(mesh);
+    });
+    const used = new Set<THREE.Object3D>();   // 쓴 모델 제공 외곽선 (묶음을 켜도 나머지는 숨김)
     for (const mesh of meshes) {
+      const candidate = profile.outline.normals === "model" ? authored.get(mesh.name + "_Outline") : undefined;
+      const own = candidate && samePositions(candidate.geometry, mesh.geometry, height * 1e-4) ? candidate : undefined;   // 모양이 다른 외곽선 메시는 매끄러운 법선으로 대신
+      if (own) {   // 모델 제공 외곽선 메시: 다듬은 법선·정점 색 R(두께 배율)을 그대로 쓰고 재질만 MToon 외곽선으로
+        const materials = ([] as THREE.Material[]).concat(mesh.material);
+        const color = own.geometry.getAttribute("color");
+        if (color) own.geometry.setAttribute("outlineWidth", new THREE.BufferAttribute(Float32Array.from({ length: color.count }, (_, i) => color.getX(i)), 1));
+        const ownMaterials = ([] as THREE.Material[]).concat(own.material).map((_, i) => outlineMaterial(materials[Math.min(i, materials.length - 1)], !!color));
+        own.material = Array.isArray(own.material) ? ownMaterials : ownMaterials[0];
+        own.visible = true; own.frustumCulled = false; own.renderOrder = -1;
+        for (let node: THREE.Object3D | null = own.parent; node && node !== root; node = node.parent) node.visible = true;
+        used.add(own);
+        continue;
+      }
       const materials = ([] as THREE.Material[]).concat(mesh.material);
       const geometry = outlineGeometry(mesh.geometry, height * 1e-5);   // 모델 키의 10만분의 1 안이면 같은 위치
       life.add(() => geometry.dispose());
-      const outline = new THREE.SkinnedMesh(geometry, Array.isArray(mesh.material) ? materials.map(outlineMaterial) : outlineMaterial(materials[0]));
+      const outline = new THREE.SkinnedMesh(geometry, Array.isArray(mesh.material) ? materials.map((material) => outlineMaterial(material)) : outlineMaterial(materials[0]));
       outline.bind(mesh.skeleton, mesh.bindMatrix);
       outline.morphTargetInfluences = mesh.morphTargetInfluences;   // 같은 배열을 써서 표정·옷 모프를 그대로 따름
       outline.morphTargetDictionary = mesh.morphTargetDictionary;
@@ -336,6 +436,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet }: {
       mesh.parent!.add(outline);
       outline.position.copy(mesh.position); outline.quaternion.copy(mesh.quaternion); outline.scale.copy(mesh.scale);
     }
+    for (const mesh of authored.values()) if (!used.has(mesh)) mesh.visible = false;
   }
 
   // ---------- 뼈 ----------
@@ -463,7 +564,23 @@ export async function createThreeRig({ base, life, canvas, W, H, pet }: {
   };
 
   // ---------- 흔들림(스프링) ----------
-  const springs = createSprings((profile.springs || []).map((spec) => ({ ...spec, roots: spec.roots.map((id) => byName.get(id)).filter((node): node is THREE.Object3D => !!node) })));
+  // 사람형 뼈로 만든 충돌체 (반지름은 모델 키 대비, 원본 VRChat 충돌체 크기 참고: 다리 5cm·머리 7cm·가슴 11~13cm 정도)
+  const colliderScale = profile.colliders?.scale ?? 1;
+  const headLocalUp = (() => { const node = bone("head"); return node ? new THREE.Vector3(0, fullH * 0.045, 0).applyQuaternion(node.getWorldQuaternion(new THREE.Quaternion()).invert()) : undefined; })();
+  const COLLIDERS: Array<[ColliderGroup, HumanBone, HumanBone | null, number, THREE.Vector3?]> = [
+    ["head", "head", null, 0.05, headLocalUp],
+    ["body", "chest", "neck", 0.06], ["body", "spine", "chest", 0.06], ["body", "hips", "spine", 0.055],
+    ["legs", "leftUpperLeg", "rightUpperLeg", 0.035],
+    ["legs", "leftUpperLeg", "leftLowerLeg", 0.045], ["legs", "rightUpperLeg", "rightLowerLeg", 0.045],
+    ["legs", "leftLowerLeg", "leftFoot", 0.03], ["legs", "rightLowerLeg", "rightFoot", 0.03],
+    ["arms", "leftUpperArm", "leftLowerArm", 0.022], ["arms", "rightUpperArm", "rightLowerArm", 0.022],
+    ["arms", "leftLowerArm", "leftHand", 0.018], ["arms", "rightLowerArm", "rightHand", 0.018],
+  ];
+  const collidersOf = (groups: ColliderGroup[] = []) => COLLIDERS.filter(([group, from]) => groups.includes(group) && bone(from)).map(([, from, to, ratio, offset]): SpringCollider =>
+    ({ from: bone(from)!, to: to ? bone(to) : null, fromOffset: offset, radius: ratio * fullH * colliderScale }));
+  root.updateMatrixWorld(true);
+  const springs = createSprings((profile.springs || []).map((spec) => ({ ...spec, radius: (spec.radius ?? 0.012) * fullH, colliders: collidersOf(spec.colliders),
+    roots: spec.roots.map((id) => byName.get(id)).filter((node): node is THREE.Object3D => !!node) })));
 
   // ---------- 얼굴 SDF: 빛이 얼굴 정면에서 돌아간 각도 ----------
   // 처음 자세에서 모델은 카메라(+Z)를 봄 → 머리 뼈 지역 좌표의 앞·오른쪽·위 방향을 기억해 두고 매 프레임 월드로 돌림
