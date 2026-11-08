@@ -93,6 +93,46 @@ export const bindingWeight = (binding: MorphBinding, value: number) => {
   }
 };
 
+/**
+ * 외곽선용 매끄러운 법선: 같은 위치(격자 tolerance 안)에 있는 정점들의 법선을 평균 (UTS·lilToon의 아웃라인 법선 변환과 같은 목적)
+ * 각진 경계에서 법선이 갈라져 외곽선이 끊기거나 두께가 들쭉날쭉한 것을 막음
+ * @param positions 정점 위치 (xyz 반복)
+ * @param normals 정점 법선 (xyz 반복)
+ * @param tolerance 같은 위치로 볼 거리
+ * @returns 정점마다 평균 법선 (길이 1, 합이 0이면 원래 법선)
+ */
+export function smoothOutlineNormals(positions: ArrayLike<number>, normals: ArrayLike<number>, tolerance = 1e-4) {
+  const count = positions.length / 3, keyOf = (i: number) => `${Math.round(positions[i * 3] / tolerance)},${Math.round(positions[i * 3 + 1] / tolerance)},${Math.round(positions[i * 3 + 2] / tolerance)}`;
+  const sums = new Map<string, [number, number, number]>();
+  for (let i = 0; i < count; i++) {
+    const key = keyOf(i), sum = sums.get(key) || [0, 0, 0];
+    sum[0] += normals[i * 3]; sum[1] += normals[i * 3 + 1]; sum[2] += normals[i * 3 + 2]; sums.set(key, sum);
+  }
+  const out = new Float32Array(count * 3);
+  for (let i = 0; i < count; i++) {
+    const [x, y, z] = sums.get(keyOf(i))!, length = Math.hypot(x, y, z);
+    if (length > 1e-8) { out[i * 3] = x / length; out[i * 3 + 1] = y / length; out[i * 3 + 2] = z / length; }
+    else { out[i * 3] = normals[i * 3]; out[i * 3 + 1] = normals[i * 3 + 1]; out[i * 3 + 2] = normals[i * 3 + 2]; }
+  }
+  return out;
+}
+
+/**
+ * 외곽선 메시용 지오메트리: 위치·스킨·UV·모프 위치는 원본과 공유하고 법선만 매끄러운 외곽선 법선으로 바꿈
+ * 모프 법선은 빼서 표정 모프가 외곽선 방향을 흔들지 않게 함
+ */
+function outlineGeometry(source: THREE.BufferGeometry, tolerance: number) {
+  const geometry = new THREE.BufferGeometry();
+  for (const [name, attribute] of Object.entries(source.attributes)) if (name !== "normal") geometry.setAttribute(name, attribute);
+  const normal = source.getAttribute("normal");
+  if (normal) geometry.setAttribute("normal", new THREE.BufferAttribute(smoothOutlineNormals(source.getAttribute("position").array, normal.array, tolerance), 3));
+  if (source.index) geometry.setIndex(source.index);
+  for (const group of source.groups) geometry.addGroup(group.start, group.count, group.materialIndex);
+  if (source.morphAttributes.position) geometry.morphAttributes.position = source.morphAttributes.position;
+  geometry.morphTargetsRelative = source.morphTargetsRelative;
+  return geometry;
+}
+
 /** 흔들림 사슬 하나의 설정: roots 아래 모든 뼈. stiffness = 제자리로 돌아오는 힘, drag = 감쇠(0~1), gravity = 아래로 끄는 힘 */
 export type SpringSpec = { roots: THREE.Object3D[]; stiffness?: number; drag?: number; gravity?: number };
 /**
@@ -285,7 +325,9 @@ export async function createThreeRig({ base, life, canvas, W, H, pet }: {
     root.traverse((node) => { const mesh = node as THREE.SkinnedMesh; if (mesh.isSkinnedMesh && mesh.visible && !hidden.has(mesh.parent?.name || "")) meshes.push(mesh); });
     for (const mesh of meshes) {
       const materials = ([] as THREE.Material[]).concat(mesh.material);
-      const outline = new THREE.SkinnedMesh(mesh.geometry, Array.isArray(mesh.material) ? materials.map(outlineMaterial) : outlineMaterial(materials[0]));
+      const geometry = outlineGeometry(mesh.geometry, height * 1e-5);   // 모델 키의 10만분의 1 안이면 같은 위치
+      life.add(() => geometry.dispose());
+      const outline = new THREE.SkinnedMesh(geometry, Array.isArray(mesh.material) ? materials.map(outlineMaterial) : outlineMaterial(materials[0]));
       outline.bind(mesh.skeleton, mesh.bindMatrix);
       outline.morphTargetInfluences = mesh.morphTargetInfluences;   // 같은 배열을 써서 표정·옷 모프를 그대로 따름
       outline.morphTargetDictionary = mesh.morphTargetDictionary;

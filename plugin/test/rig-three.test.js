@@ -58,3 +58,17 @@ test('흔들림 뼈는 몸이 홱 돌면 늦게 따라가고, 시간이 지나�
   const length = hair1.getWorldPosition(new THREE.Vector3()).distanceTo(hair0.getWorldPosition(new THREE.Vector3()))
   assert.ok(Math.abs(length - 1) < 1e-6, '뼈 길이 유지')
 })
+
+test('외곽선 법선은 같은 위치 정점끼리 평균내 각진 경계에서도 하나로 모인다', async () => {
+  const { smoothOutlineNormals } = await import('../../character/rig-three.ts')
+  // 정육면체 모서리처럼 같은 자리에 법선이 다른 정점 셋(+x, +y, +z)과 떨어진 정점 하나
+  const positions = [1, 1, 1, 1, 1, 1, 1.00000001, 1, 1, 5, 5, 5]
+  const normals = [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1]
+  const out = smoothOutlineNormals(positions, normals, 1e-4)
+  const k = 1 / Math.sqrt(3)
+  for (let i = 0; i < 3; i++) for (let a = 0; a < 3; a++) assert.ok(Math.abs(out[i * 3 + a] - k) < 1e-6, '같은 자리 셋은 대각선 방향 하나로')
+  assert.deepEqual(Array.from(out.slice(9)), [0, 0, 1], '혼자 있는 정점은 그대로')
+  // 서로 반대 법선만 모이면(합 0) 원래 법선 유지
+  const flat = smoothOutlineNormals([0, 0, 0, 0, 0, 0], [0, 0, 1, 0, 0, -1])
+  assert.deepEqual(Array.from(flat), [0, 0, 1, 0, 0, -1])
+})
