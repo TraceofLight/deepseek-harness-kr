@@ -39,6 +39,13 @@ export type AvatarProfile = {
   features?: RigFeature[];
   /** 외곽선 (MToon 외곽선): width = 모델 키 대비 두께, color = 선 색, skip = 외곽선을 빼는 재질 이름 */
   outline?: { width: number; color?: string; skip?: string[] };
+  /**
+   * 얼굴 SDF 그림자: 빛이 얼굴 정면에서 돌아간 각도를 문턱값으로 SDF 맵을 잘라 얼굴 그림자 경계를 정함
+   * material = 적용할 재질 이름, map = SDF 맵(R·G = 양쪽 빛용 문턱값), swap = R·G가 맡는 쪽을 바꿈, softness = 경계 부드러움
+   */
+  faceSdf?: { material: string; map: string; swap?: boolean; softness?: number };
+  /** 조명: direction = 빛이 오는 방향(모델 기준, +x 화면 오른쪽·+y 위·+z 카메라 쪽), intensity·ambient = 세기 */
+  light?: { direction?: [number, number, number]; intensity?: number; ambient?: number };
   /** 림 라이트: color = 색, power = 가장자리에 모이는 정도(클수록 얇음), mix = 조명 영향 */
   rim?: { color: string; power?: number; mix?: number };
   /** 몸 애니메이션 (폴더 기준 FBX): idle = 대기 반복 클립, gestures = 몸짓 이름(동작 코드의 play) → 클립 */
@@ -149,9 +156,9 @@ export async function createThreeRig({ base, life, canvas, W, H, pet }: {
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   const scene = new THREE.Scene();
   scene.add(root);
-  const light = new THREE.DirectionalLight(0xffffff, 2.2);
-  light.position.set(0.6, 1.2, 1.6);
-  scene.add(light, new THREE.AmbientLight(0xffffff, 0.9));
+  const light = new THREE.DirectionalLight(0xffffff, profile.light?.intensity ?? 2.2);
+  light.position.set(...(profile.light?.direction ?? [0.6, 1.2, 1.6]));
+  scene.add(light, new THREE.AmbientLight(0xffffff, profile.light?.ambient ?? 0.9));
   life.add(() => {
     root.traverse((node) => {
       const mesh = node as THREE.Mesh;
@@ -174,6 +181,30 @@ export async function createThreeRig({ base, life, canvas, W, H, pet }: {
     return found;
   };
   const hidden = new Set(profile.hide || []);
+  // 얼굴 SDF 그림자 uniform (매 프레임 머리·빛 방향으로 갱신)
+  const faceSdfUniforms = {
+    faceSdfMap: { value: profile.faceSdf ? texture(profile.faceSdf.map, true)! : null },
+    faceSdfThreshold: { value: 0.5 }, faceSdfUseR: { value: 1 }, faceSdfSoft: { value: profile.faceSdf?.softness ?? 0.02 },
+  };
+  /** MToon 재질의 그림자 판정(getShading) 뒤에 SDF 판정을 덧붙임. R·G가 모두 0인 곳(귀·목 등)은 원래 조명 그대로 */
+  const attachFaceSdf = (material: MToonMaterial) => {
+    const mtoonCompile = material.onBeforeCompile.bind(material);   // MToon이 버전 상수 등을 채우는 원래 단계는 먼저 실행
+    material.onBeforeCompile = (shader, renderer) => {
+      mtoonCompile(shader, renderer);
+      Object.assign(shader.uniforms, faceSdfUniforms);
+      shader.fragmentShader = "#define USE_FACE_SDF\nuniform sampler2D faceSdfMap;\nuniform float faceSdfThreshold;\nuniform float faceSdfUseR;\nuniform float faceSdfSoft;\n" +
+        shader.fragmentShader.replaceAll("float shading = getShading( dotNL, shadow, material.shadingShift );", `float shading = getShading( dotNL, shadow, material.shadingShift );
+    #if defined( USE_FACE_SDF ) && defined( MTOON_USE_UV )
+      vec3 sdfTexel = texture2D( faceSdfMap, vUv ).rgb;
+      if ( max( sdfTexel.r, sdfTexel.g ) > 0.02 ) {
+        float sdfValue = mix( sdfTexel.g, sdfTexel.r, faceSdfUseR );
+        shading = smoothstep( faceSdfThreshold - faceSdfSoft, faceSdfThreshold + faceSdfSoft, sdfValue ) * shadow;
+      }
+    #endif`);
+    };
+    const key = material.customProgramCacheKey.bind(material);
+    material.customProgramCacheKey = () => key() + "|faceSdf";
+  };
   root.traverse((node) => {
     if (hidden.has(node.name)) node.visible = false;
     const mesh = node as THREE.Mesh;
@@ -193,6 +224,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet }: {
         ...(profile.rim ? { parametricRimColorFactor: new THREE.Color(profile.rim.color), parametricRimFresnelPowerFactor: profile.rim.power ?? 4, rimLightingMixFactor: profile.rim.mix ?? 0.5 } : {}),
       });
       toon.name = material.name;
+      if (profile.faceSdf && profile.faceSdf.material === material.name) attachFaceSdf(toon);
       toon.visible = !spec.hidden;
       material.dispose();
       return toon;
@@ -357,6 +389,25 @@ export async function createThreeRig({ base, life, canvas, W, H, pet }: {
   // ---------- 흔들림(스프링) ----------
   const springs = createSprings((profile.springs || []).map((spec) => ({ ...spec, roots: spec.roots.map((id) => byName.get(id)).filter((node): node is THREE.Object3D => !!node) })));
 
+  // ---------- 얼굴 SDF: 빛이 얼굴 정면에서 돌아간 각도 ----------
+  // 처음 자세에서 모델은 카메라(+Z)를 봄 → 머리 뼈 지역 좌표의 앞·오른쪽·위 방향을 기억해 두고 매 프레임 월드로 돌림
+  const headBone = bone("head");
+  const headWorldQ = headBone ? headBone.getWorldQuaternion(new THREE.Quaternion()).invert() : new THREE.Quaternion();
+  const faceAxes = { forward: new THREE.Vector3(0, 0, 1).applyQuaternion(headWorldQ), right: new THREE.Vector3(1, 0, 0).applyQuaternion(headWorldQ), up: new THREE.Vector3(0, 1, 0).applyQuaternion(headWorldQ) };
+  const sdfQ = new THREE.Quaternion(), sdfF = new THREE.Vector3(), sdfR = new THREE.Vector3(), sdfU = new THREE.Vector3(), sdfL = new THREE.Vector3();
+  /** 머리 수평면에 투영한 빛 방향으로 SDF 문턱값(정면 0 → 옆 0.5 → 뒤 1)과 쓸 채널 결정 */
+  const updateFaceSdf = () => {
+    if (!headBone) return;
+    headBone.getWorldQuaternion(sdfQ);
+    sdfF.copy(faceAxes.forward).applyQuaternion(sdfQ); sdfR.copy(faceAxes.right).applyQuaternion(sdfQ); sdfU.copy(faceAxes.up).applyQuaternion(sdfQ);
+    sdfL.copy(light.position).normalize();
+    sdfL.addScaledVector(sdfU, -sdfL.dot(sdfU));
+    if (sdfL.lengthSq() < 1e-6) return;
+    sdfL.normalize();
+    faceSdfUniforms.faceSdfThreshold.value = Math.acos(clamp(sdfF.dot(sdfL), -1, 1)) / Math.PI;
+    faceSdfUniforms.faceSdfUseR.value = (sdfR.dot(sdfL) > 0) !== !!profile.faceSdf!.swap ? 1 : 0;
+  };
+
   // ---------- 매 프레임 ----------
   const values = new Map<string, number>();
   const expressionWeights = new Map<string, number>();
@@ -497,6 +548,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet }: {
       applyMorphs();
       root.updateMatrixWorld(true);
       if (dt > 0) springs.step(dt);
+      if (profile.faceSdf) updateFaceSdf();
       renderer.render(scene, camera);
     },
     gesture(name, ms) {
