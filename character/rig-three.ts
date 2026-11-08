@@ -23,8 +23,8 @@ export type AvatarProfile = {
   hide?: string[];
   /** 재질 이름 → MToon 설정 (텍스처는 폴더 기준 상대 경로) */
   materials?: Record<string, { map?: string; shade?: string; ao?: string; aoScale?: number;
-    /** UTS HighColor(스페큘러 하이라이트): color = 색, power = 날카로움(0~1, UTS _HighColor_Power), mask = 마스크 맵, onShadow = 그림자 쪽 세기, strength = 전체 세기(장면 빛 세기 보정) */
-    highColor?: { color: string; power?: number; mask?: string; onShadow?: number; strength?: number }; alphaTest?: number; transparent?: boolean; shadingShift?: number; shadingToony?: number; hidden?: boolean; doubleSided?: boolean }>;
+    /** UTS HighColor(스페큘러 하이라이트): color = 색, power = 날카로움(0~1, UTS _HighColor_Power), mask = 마스크 맵, onShadow = 그림자 쪽 세기, strength = 전체 세기(장면 빛 세기 보정), toon = 경계가 딱 떨어지는 툰 모드(UTS 스페큘러 끔) */
+    highColor?: { color: string; power?: number; mask?: string; onShadow?: number; strength?: number; toon?: boolean }; alphaTest?: number; transparent?: boolean; shadingShift?: number; shadingToony?: number; hidden?: boolean; doubleSided?: boolean }>;
   /** 사람형 뼈 → 모델 뼈 이름 */
   bones: Partial<Record<HumanBone, string>>;
   /** 의미 채널(PARAMS 키, 모음은 mouthVowel.A 등) → 모프 대응 */
@@ -213,13 +213,15 @@ export async function createThreeRig({ base, life, canvas, W, H, pet }: {
       const spec = parts.highColor, mask = texture(spec.mask, true);
       Object.assign(uniforms, {
         highColor: { value: new THREE.Color(spec.color) }, highColorExponent: { value: Math.pow(2, 11 - 10 * (spec.power ?? 0.7)) },
-        highColorOnShadow: { value: spec.onShadow ?? 0.5 }, highColorMask: { value: mask ?? null }, highColorStrength: { value: spec.strength ?? 1 },
+        highColorOnShadow: { value: spec.onShadow ?? 0.5 }, highColorMask: { value: mask ?? null }, highColorStrength: { value: spec.strength ?? 1 }, highColorToonEdge: { value: spec.toon ? 1 - Math.pow(spec.power ?? 0.7, 5) : -1 },
       });
-      head += "uniform vec3 highColor;\nuniform float highColorExponent;\nuniform float highColorOnShadow;\nuniform float highColorStrength;\n" + (mask ? "#define USE_HIGHCOLOR_MASK\nuniform sampler2D highColorMask;\n" : "");
+      head += "uniform vec3 highColor;\nuniform float highColorExponent;\nuniform float highColorOnShadow;\nuniform float highColorStrength;\nuniform float highColorToonEdge;\n" + (mask ? "#define USE_HIGHCOLOR_MASK\nuniform sampler2D highColorMask;\n" : "");
       body += `
     {
       float highHalfLambert = 0.5 * dot( normalize( directLight.direction + geometryViewDir ), geometryNormal ) + 0.5;
-      float highAmount = pow( clamp( highHalfLambert, 0.0, 1.0 ), highColorExponent );
+      float highAmount = highColorToonEdge >= 0.0
+        ? smoothstep( highColorToonEdge - 0.005, highColorToonEdge + 0.005, highHalfLambert )   // 툰: 1 - power⁵ 넘는 곳만 딱 끊어 칠함
+        : pow( clamp( highHalfLambert, 0.0, 1.0 ), highColorExponent );
       #if defined( USE_HIGHCOLOR_MASK ) && defined( MTOON_USE_UV )
         highAmount *= texture2D( highColorMask, vUv ).g;
       #endif
