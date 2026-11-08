@@ -167,7 +167,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet }: {
   const texture = (file?: string) => {
     if (!file) return undefined;
     let found = textures.get(file);
-    if (!found) { found = textureLoader.load(base + file); found.colorSpace = THREE.SRGBColorSpace; textures.set(file, found); life.add(() => found!.dispose()); }
+    if (!found) { found = textureLoader.load(base + file); found.colorSpace = THREE.SRGBColorSpace; found.wrapS = found.wrapT = THREE.RepeatWrapping;   /* Unity·UE처럼 반복 (효과 메시 UV가 0~1 밖을 씀) */ textures.set(file, found); life.add(() => found!.dispose()); }
     return found;
   };
   const hidden = new Set(profile.hide || []);
