@@ -324,8 +324,9 @@ export async function createThreeRig({ base, life, canvas, W, H, pet }: {
   const euler = new THREE.Euler(), deltaQ = new THREE.Quaternion(), parentQ = new THREE.Quaternion(), worldQ = new THREE.Quaternion();
   // 고개 채널은 Live2D 물리 입력값(±30)이라 실제 각도로 그대로 쓰면 크고 딱딱함 → 배율을 줄이고 관성을 줘서 따라가게 함
   const HEAD_GAIN = { yaw: 0.6, pitch: 0.5, roll: 0.5 }, HEAD_FOLLOW = 7;   // 배율, 따라가는 빠르기(초당)
-  /** 목·머리의 지금 덧씌움 회전 (목표 회전 쪽으로 slerp로 따라감) */
-  const smoothed = new Map<HumanBone, THREE.Quaternion>([["neck", new THREE.Quaternion()], ["head", new THREE.Quaternion()]]);
+  // 고개·몸 채널은 Live2D에선 물리 입력이라 늦게 따라감 → 3D에선 뼈마다 덧씌움 회전을 들고 목표 쪽으로 slerp로 따라가게 함
+  /** 고개·몸 뼈의 지금 덧씌움 회전 */
+  const smoothed = new Map<HumanBone, THREE.Quaternion>((["neck", "head", "chest", "spine"] as HumanBone[]).map((name) => [name, new THREE.Quaternion()]));
   /**
    * 덧씌울 회전을 뼈의 지금 자세(애니메이션 포함) 월드 회전 앞에 곱함: L' = P⁻¹ × D × P × L
    * @param delta 월드 축 기준 회전
@@ -343,12 +344,11 @@ export async function createThreeRig({ base, life, canvas, W, H, pet }: {
     const v = (key: string) => values.get(key) || 0;
     const yaw = clamp(v("headTurn"), -30, 30) * HEAD_GAIN.yaw, pitch = clamp(v("headTilt"), -30, 30) * HEAD_GAIN.pitch, roll = clamp(v("headRoll"), -30, 30) * HEAD_GAIN.roll;
     const follow = Math.min(1, dt * HEAD_FOLLOW);
-    /** 고개 뼈: 목표 회전을 쿼터니언으로 만들고 지금 회전에서 slerp로 따라가 적용 */
-    const turnSmooth = (name: HumanBone, share: number) => {
+    /** 목표 회전(월드 축, 도)을 쿼터니언으로 만들고 지금 회전에서 slerp로 따라가 적용 */
+    const turnSmooth = (name: HumanBone, x: number, y: number, z: number) => {
       const node = bone(name), current = smoothed.get(name)!;
       if (!node || !node.parent) return;
-      deltaQ.setFromEuler(euler.set(-pitch * share * DEG, yaw * share * DEG, roll * share * DEG, "YXZ"));
-      current.slerp(deltaQ, follow);
+      current.slerp(deltaQ.setFromEuler(euler.set(x * DEG, y * DEG, z * DEG, "YXZ")), follow);
       applyDelta(node, current);
     };
     /** 월드 축 회전(도) 바로 적용 */
@@ -357,10 +357,10 @@ export async function createThreeRig({ base, life, canvas, W, H, pet }: {
       if (!node || !node.parent || (!x && !y && !z)) return;
       applyDelta(node, deltaQ.setFromEuler(euler.set(x * DEG, y * DEG, z * DEG, "YXZ")));
     };
-    turnSmooth("neck", 0.4);
-    turnSmooth("head", 0.6);
-    turn("chest", v("bodyLean") * 0.25 - v("breath") * 1.2, v("bodyShiftX") * 0.2, 0);
-    turn("spine", 0, 0, v("bodyShiftZ") * 0.2);
+    turnSmooth("neck", -pitch * 0.4, yaw * 0.4, roll * 0.4);
+    turnSmooth("head", -pitch * 0.6, yaw * 0.6, roll * 0.6);
+    turnSmooth("chest", v("bodyLean") * 0.25 - v("breath") * 1.2, clamp(v("bodyShiftX"), -30, 30) * 0.2, 0);
+    turnSmooth("spine", 0, 0, clamp(v("bodyShiftZ"), -30, 30) * 0.2);
     const eyeX = clamp(v("eyeLookX"), -1, 1) * 18, eyeY = clamp(v("eyeLookY"), -1, 1) * 14;
     turn("leftEye", -eyeY, eyeX, 0);
     turn("rightEye", -eyeY, eyeX, 0);
