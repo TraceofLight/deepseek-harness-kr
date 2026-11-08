@@ -1375,6 +1375,7 @@
         };
         const play = (name, dur) => {
           relay("play", [name, dur]);
+          rig.gesture?.(name, dur);
           gestureState.name = name;
           gestureState.start = performance.now();
           gestureState.dur = dur;

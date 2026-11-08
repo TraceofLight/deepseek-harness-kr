@@ -211,7 +211,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
        * 몸짓 한 번 재생 (펫 창에도 전달, 방향은 무작위, 튕김이 있는 몸짓은 몸도 튕김)
        * @param dur 몸짓 길이(ms)
        */
-      const play = (name: string, dur: number) => { relay("play", [name, dur]); gestureState.name = name; gestureState.start = performance.now(); gestureState.dur = dur; gestureState.dir = Math.random() < 0.5 ? -1 : 1; if (BOB_KICK[name]) bobKick(BOB_KICK[name]); };
+      const play = (name: string, dur: number) => { relay("play", [name, dur]); rig.gesture?.(name, dur); gestureState.name = name; gestureState.start = performance.now(); gestureState.dur = dur; gestureState.dir = Math.random() < 0.5 ? -1 : 1; if (BOB_KICK[name]) bobKick(BOB_KICK[name]); };
       const BOB_KICK: Record<string, number> = { bounce: 60, laugh: 50, nod: -45 };   // 몸짓 시작 때 몸 튕김 세기
       let mood = "idle", moodUntil = 0, nextIdleGesture = performance.now() + 6000;
       /**

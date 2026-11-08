@@ -37,6 +37,10 @@ export type AvatarProfile = {
   armDown?: number;
   /** 지원하는 기능 (기본은 없음) */
   features?: RigFeature[];
+  /** 몸 애니메이션 (폴더 기준 FBX): idle = 대기 반복 클립, gestures = 몸짓 이름(동작 코드의 play) → 클립 */
+  animations?: { idle?: string; gestures?: Record<string, string> };
+  /** 흔들림(스프링) 사슬: roots 아래 모든 뼈. stiffness = 제자리로 돌아오는 힘, drag = 감쇠(0~1), gravity = 아래로 끄는 힘 */
+  springs?: Array<{ roots: string[]; stiffness?: number; drag?: number; gravity?: number }>;
 };
 
 const DEG = Math.PI / 180;
@@ -75,6 +79,51 @@ export const bindingWeight = (binding: MorphBinding, value: number) => {
     default: return value * scale;
   }
 };
+
+/** 흔들림 사슬 하나의 설정: roots 아래 모든 뼈. stiffness = 제자리로 돌아오는 힘, drag = 감쇠(0~1), gravity = 아래로 끄는 힘 */
+export type SpringSpec = { roots: THREE.Object3D[]; stiffness?: number; drag?: number; gravity?: number };
+/**
+ * 흔들림(스프링) 뼈 준비: 뼈마다 끝점(자식 뼈 위치)이 관성·복원력·중력으로 따라가고, 뼈를 끝점 쪽으로 돌림 (VRM 스프링 본과 같은 방식)
+ * 힘은 뼈 길이에 비례해 모델 단위(cm·m)와 무관. 부르기 전에 뼈의 월드 행렬이 지금 자세로 갱신돼 있어야 함
+ * @returns step(dt): 사슬 위쪽부터 한 프레임 진행
+ */
+export function createSprings(specs: SpringSpec[]) {
+  type Joint = { node: THREE.Object3D; restLocal: THREE.Quaternion; axis: THREE.Vector3; length: number; prev: THREE.Vector3; tail: THREE.Vector3; stiffness: number; drag: number; gravity: number };
+  const joints: Joint[] = [];
+  const head = new THREE.Vector3(), restDir = new THREE.Vector3(), next = new THREE.Vector3(), inertia = new THREE.Vector3(), turn = new THREE.Quaternion(), parentQ = new THREE.Quaternion();
+  for (const spec of specs) for (const root of spec.roots) {
+    root.updateWorldMatrix(true, true);
+    root.traverse((node) => {
+      const child = node.children.find((each) => (each as THREE.Bone).isBone);
+      if (!child || child.position.lengthSq() < 1e-12) return;
+      const tail = child.getWorldPosition(new THREE.Vector3());
+      joints.push({ node, restLocal: node.quaternion.clone(), axis: child.position.clone().normalize(), length: tail.distanceTo(node.getWorldPosition(head)),
+        prev: tail.clone(), tail, stiffness: spec.stiffness ?? 1, drag: spec.drag ?? 0.4, gravity: spec.gravity ?? 0 });
+    });
+  }
+  return {
+    count: joints.length,
+    /** 한 프레임 진행 @param dt 초 */
+    step(dt: number) {
+      for (const joint of joints) {
+        const { node } = joint;
+        node.quaternion.copy(joint.restLocal);
+        node.parent!.getWorldQuaternion(parentQ);
+        node.getWorldPosition(head);
+        restDir.copy(joint.axis).applyQuaternion(turn.copy(parentQ).multiply(joint.restLocal));   // 기본 자세의 뼈 방향 (월드)
+        // 다음 끝점 = 지금 끝점 + 관성(감쇠) + 제자리 방향으로 당기는 힘 + 중력
+        inertia.copy(joint.tail).sub(joint.prev).multiplyScalar(1 - joint.drag);
+        next.copy(joint.tail).add(inertia).addScaledVector(restDir, joint.stiffness * dt * joint.length * 10);
+        next.y -= joint.gravity * dt * joint.length * 10;
+        next.sub(head).normalize().multiplyScalar(joint.length).add(head);   // 뼈 길이 유지
+        joint.prev.copy(joint.tail); joint.tail.copy(next);
+        turn.setFromUnitVectors(restDir, next.clone().sub(head).normalize());
+        node.quaternion.copy(parentQ.clone().invert().multiply(turn).multiply(parentQ).multiply(joint.restLocal));
+        node.updateMatrixWorld(true);
+      }
+    },
+  };
+}
 
 /**
  * 3D rig 생성: avatar.json과 모델을 불러와 캔버스에 그릴 준비
@@ -144,6 +193,9 @@ export async function createThreeRig({ base, life, canvas, W, H, pet }: {
   // ---------- 뼈 ----------
   const byName = new Map<string, THREE.Object3D>();
   root.traverse((node) => { if (!byName.has(node.name)) byName.set(node.name, node); });
+  // 모델의 원래 지역 회전 (애니메이션 클립을 옮길 때 기준, 팔 내림 보정 전)
+  const bindLocal = new Map<string, THREE.Quaternion>();
+  for (const [name, node] of byName) bindLocal.set(name, node.quaternion.clone());
   const bone = (name: HumanBone) => { const id = profile.bones[name]; return id ? byName.get(id) || null : null; };
   root.updateMatrixWorld(true);
   const worldOf = (node: THREE.Object3D | null) => node ? node.getWorldPosition(new THREE.Vector3()) : null;
@@ -166,8 +218,8 @@ export async function createThreeRig({ base, life, canvas, W, H, pet }: {
   }
   // 움직일 뼈의 기본 자세 (매 프레임 여기서 시작)
   const MOVED: HumanBone[] = ["hips", "spine", "chest", "neck", "head", "leftEye", "rightEye"];
-  const rest = new Map<THREE.Object3D, { local: THREE.Quaternion; world: THREE.Quaternion }>();
-  for (const name of MOVED) { const node = bone(name); if (node) rest.set(node, { local: node.quaternion.clone(), world: node.getWorldQuaternion(new THREE.Quaternion()) }); }
+  const rest = new Map<THREE.Object3D, THREE.Quaternion>();
+  for (const name of MOVED) { const node = bone(name); if (node) rest.set(node, node.quaternion.clone()); }
 
   // ---------- 크기·카메라 ----------
   const box = new THREE.Box3().setFromObject(root);
@@ -209,23 +261,80 @@ export async function createThreeRig({ base, life, canvas, W, H, pet }: {
     }
   });
 
+  // ---------- 몸 애니메이션 ----------
+  const springRoots = new Set<THREE.Object3D>();
+  for (const spec of profile.springs || []) for (const id of spec.roots) { const node = byName.get(id); if (node) springRoots.add(node); }
+  const springBones = new Set<THREE.Object3D>();
+  for (const node of springRoots) node.traverse((child) => { springBones.add(child); });
+  /**
+   * 클립 불러오기: 모델에 있는 뼈의 회전 트랙만 (흔들림 뼈·위치·모프 트랙은 뺌)
+   * 다른 도구(UE 등)가 내보낸 클립은 좌표 변환이 기본 자세에 섞여 있어, 뼈마다 기본 자세 차이를 빼서 옮김:
+   * 모델 회전 = 모델 기본 자세 × (클립 기본 자세)⁻¹ × 클립 회전
+   */
+  const loadClip = async (file: string) => {
+    const source = await loader.loadAsync(base + file);
+    const clip = source.animations[0];
+    if (!clip) return null;
+    const clipBind = new Map<string, THREE.Quaternion>();
+    source.traverse((node) => { if (!clipBind.has(node.name)) clipBind.set(node.name, node.quaternion.clone()); });
+    const q = new THREE.Quaternion(), offset = new THREE.Quaternion();
+    clip.tracks = clip.tracks.filter((track) => {
+      const dot = track.name.lastIndexOf("."), name = track.name.slice(0, dot), node = byName.get(name);
+      if (track.name.slice(dot) !== ".quaternion" || !node || springBones.has(node)) return false;
+      offset.copy(bindLocal.get(name)!).multiply(clipBind.get(name)?.clone().invert() || new THREE.Quaternion());
+      for (let i = 0; i < track.values.length; i += 4) {
+        q.fromArray(track.values, i).premultiply(offset).normalize().toArray(track.values, i);
+      }
+      return true;
+    });
+    return clip;
+  };
+  const mixer = new THREE.AnimationMixer(root);
+  const idleClip = profile.animations?.idle ? await loadClip(profile.animations.idle).catch(() => null) : null;
+  const idleAction = idleClip ? mixer.clipAction(idleClip) : null;
+  idleAction?.play();
+  const gestureActions = new Map<string, THREE.AnimationAction>();
+  for (const [name, file] of Object.entries(profile.animations?.gestures || {})) {
+    const clip = await loadClip(file).catch(() => null);
+    if (!clip) continue;
+    const action = mixer.clipAction(clip);
+    action.setLoop(THREE.LoopOnce, 1);
+    action.clampWhenFinished = true;   // 끝 자세를 붙잡은 채 대기 동작으로 섞여 돌아감
+    gestureActions.set(name, action);
+  }
+  if (life.stopped) return null;
+  let gesture: { action: THREE.AnimationAction; until: number } | null = null;
+  /** 몸짓이 끝났으면 대기 동작으로 섞어 돌아가기 */
+  const endGesture = (now: number) => {
+    if (!gesture || now < gesture.until) return;
+    gesture.action.fadeOut(0.3);
+    if (idleAction) { idleAction.enabled = true; idleAction.fadeIn(0.3).play(); }
+    gesture = null;
+  };
+
+  // ---------- 흔들림(스프링) ----------
+  const springs = createSprings((profile.springs || []).map((spec) => ({ ...spec, roots: spec.roots.map((id) => byName.get(id)).filter((node): node is THREE.Object3D => !!node) })));
+
   // ---------- 매 프레임 ----------
   const values = new Map<string, number>();
   const expressionWeights = new Map<string, number>();
   let frameFn: (() => void) | null = null;
+  let lastTick = performance.now();
   const keyOf = channelKeyOf;
-  const euler = new THREE.Euler(), deltaQ = new THREE.Quaternion();
+  const euler = new THREE.Euler(), deltaQ = new THREE.Quaternion(), parentQ = new THREE.Quaternion(), worldQ = new THREE.Quaternion();
   /** 이번 프레임 채널 값으로 뼈 회전 (고개는 목 40%·머리 60%로 나눔) */
   const applyBones = () => {
-    for (const [node, pose] of rest) node.quaternion.copy(pose.local);
     const v = (key: string) => values.get(key) || 0;
     const yaw = clamp(v("headTurn"), -30, 30), pitch = clamp(v("headTilt"), -30, 30), roll = clamp(v("headRoll"), -30, 30);
     /** 월드 축 회전(도) 적용 */
     const turn = (name: HumanBone, x: number, y: number, z: number) => {
-      const node = bone(name), pose = node && rest.get(node);
-      if (!node || !pose) return;
+      const node = bone(name);
+      if (!node || !node.parent || (!x && !y && !z)) return;
       deltaQ.setFromEuler(euler.set(x * DEG, y * DEG, z * DEG, "YXZ"));
-      turnWorld(node, deltaQ, pose.local, pose.world);
+      // 지금 자세(애니메이션 포함)의 월드 회전 앞에 D를 곱함: L' = P⁻¹ × D × P × L
+      node.parent.getWorldQuaternion(parentQ);
+      worldQ.copy(parentQ).multiply(node.quaternion).premultiply(deltaQ);
+      node.quaternion.copy(parentQ.invert().multiply(worldQ));
     };
     turn("neck", -pitch * 0.4, yaw * 0.4, roll * 0.4);
     turn("head", -pitch * 0.6, yaw * 0.6, roll * 0.6);
@@ -312,13 +421,27 @@ export async function createThreeRig({ base, life, canvas, W, H, pet }: {
       renderer.setPixelRatio(ratio);
       renderer.setSize(W, H, false);
     },
-    resetClock() {},   // 시간은 동작 코드가 performance.now로 직접 잼
-    tick() {
+    resetClock() { lastTick = performance.now(); },
+    tick(time) {
+      const dt = clamp((time - lastTick) / 1000, 0, 0.05); lastTick = time;
       values.clear(); expressionWeights.clear();
       frameFn?.();
+      for (const [node, local] of rest) node.quaternion.copy(local);   // 애니메이션 트랙이 없는 뼈(눈 등)도 매 프레임 같은 자리에서 시작
+      endGesture(performance.now());
+      mixer.update(dt);
       applyBones();
       applyMorphs();
+      root.updateMatrixWorld(true);
+      if (dt > 0) springs.step(dt);
       renderer.render(scene, camera);
+    },
+    gesture(name, ms) {
+      const action = gestureActions.get(name);
+      if (!action) return;
+      if (gesture && gesture.action !== action) gesture.action.fadeOut(0.2);
+      idleAction?.fadeOut(0.25);
+      action.reset().setEffectiveWeight(1).fadeIn(0.25).play();
+      gesture = { action, until: performance.now() + Math.max(action.getClip().duration * 1000, ms) };
     },
     systemTicker() {},
   };
