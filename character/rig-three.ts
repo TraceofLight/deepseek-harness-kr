@@ -251,10 +251,12 @@ export async function createThreeRig({ base, life, canvas, W, H, pet }: {
     turnWorld(upper, delta, upper.quaternion.clone(), upper.getWorldQuaternion(new THREE.Quaternion()));
     root.updateMatrixWorld(true);
   }
-  // 움직일 뼈의 기본 자세 (매 프레임 여기서 시작)
+  // 채널을 덧씌우는 뼈의 바탕 자세 (애니메이션이 정한 자세, 없으면 기본 자세). 매 프레임 여기서 시작해 덧씌움이 쌓이지 않게 함
+  // AnimationMixer는 값이 직전 프레임과 같으면 뼈에 쓰지 않으므로, 기본 자세가 아니라 직전 바탕 자세로 되돌려야 함
+  // (기본 자세로 되돌리면 클립 값이 몇 프레임 그대로인 구간에서 뼈가 기본 자세로 튐)
   const MOVED: HumanBone[] = ["hips", "spine", "chest", "neck", "head", "leftEye", "rightEye"];
-  const rest = new Map<THREE.Object3D, THREE.Quaternion>();
-  for (const name of MOVED) { const node = bone(name); if (node) rest.set(node, node.quaternion.clone()); }
+  const basePose = new Map<THREE.Object3D, THREE.Quaternion>();
+  for (const name of MOVED) { const node = bone(name); if (node) basePose.set(node, node.quaternion.clone()); }
 
   // ---------- 크기·카메라 ----------
   const box = new THREE.Box3().setFromObject(root);
@@ -482,9 +484,10 @@ export async function createThreeRig({ base, life, canvas, W, H, pet }: {
       const dt = clamp((time - lastTick) / 1000, 0, 0.05); lastTick = time;
       values.clear(); expressionWeights.clear();
       frameFn?.();
-      for (const [node, local] of rest) node.quaternion.copy(local);   // 애니메이션 트랙이 없는 뼈(눈 등)도 매 프레임 같은 자리에서 시작
+      for (const [node, pose] of basePose) node.quaternion.copy(pose);   // 지난 프레임의 덧씌움을 걷어 내고 바탕 자세에서 시작
       endGesture(performance.now());
       mixer.update(dt);
+      for (const [node, pose] of basePose) pose.copy(node.quaternion);   // 믹서가 바꾼 값(안 바꿨으면 그대로)을 바탕 자세로 기억
       applyBones(dt);
       applyMorphs();
       root.updateMatrixWorld(true);
