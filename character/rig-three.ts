@@ -22,7 +22,7 @@ export type AvatarProfile = {
   /** 숨길 오브젝트 이름 (외곽선용 복제 메시 등) */
   hide?: string[];
   /** 재질 이름 → MToon 설정 (텍스처는 폴더 기준 상대 경로) */
-  materials?: Record<string, { map?: string; shade?: string; alphaTest?: number; transparent?: boolean; shadingShift?: number; shadingToony?: number; hidden?: boolean; doubleSided?: boolean }>;
+  materials?: Record<string, { map?: string; shade?: string; ao?: string; aoScale?: number; alphaTest?: number; transparent?: boolean; shadingShift?: number; shadingToony?: number; hidden?: boolean; doubleSided?: boolean }>;
   /** 사람형 뼈 → 모델 뼈 이름 */
   bones: Partial<Record<HumanBone, string>>;
   /** 의미 채널(PARAMS 키, 모음은 mouthVowel.A 등) → 모프 대응 */
@@ -163,11 +163,14 @@ export async function createThreeRig({ base, life, canvas, W, H, pet }: {
 
   // ---------- 재질: MToon으로 바꾸고 숨길 것은 숨김 ----------
   const textures = new Map<string, THREE.Texture>();
-  /** 폴더 기준 텍스처 (같은 파일은 한 번만) */
-  const texture = (file?: string) => {
+  /**
+   * 폴더 기준 텍스처 (같은 파일은 한 번만)
+   * @param linear true면 색이 아닌 수치 맵(AO 등)이라 색 공간 변환 없이 읽음
+   */
+  const texture = (file?: string, linear = false) => {
     if (!file) return undefined;
     let found = textures.get(file);
-    if (!found) { found = textureLoader.load(base + file); found.colorSpace = THREE.SRGBColorSpace; found.wrapS = found.wrapT = THREE.RepeatWrapping;   /* Unity·UE처럼 반복 (효과 메시 UV가 0~1 밖을 씀) */ textures.set(file, found); life.add(() => found!.dispose()); }
+    if (!found) { found = textureLoader.load(base + file); found.colorSpace = linear ? THREE.NoColorSpace : THREE.SRGBColorSpace; found.wrapS = found.wrapT = THREE.RepeatWrapping;   /* Unity·UE처럼 반복 (효과 메시 UV가 0~1 밖을 씀) */ textures.set(file, found); life.add(() => found!.dispose()); }
     return found;
   };
   const hidden = new Set(profile.hide || []);
@@ -181,6 +184,8 @@ export async function createThreeRig({ base, life, canvas, W, H, pet }: {
       if (!spec) return material;
       const toon = new MToonMaterial({
         ...(spec.map ? { map: texture(spec.map) } : {}), ...(spec.shade ? { shadeMultiplyTexture: texture(spec.shade) } : {}),
+        // AO(lilToon의 그림자 경계 마스크): 어두운 텍셀일수록 그림자 경계를 밀어 늘 그늘지게 함
+        ...(spec.ao ? { shadingShiftTexture: texture(spec.ao, true), shadingShiftTextureScale: spec.aoScale ?? 1 } : {}),
         shadeColorFactor: new THREE.Color(1, 1, 1),
         shadingShiftFactor: spec.shadingShift ?? -0.05, shadingToonyFactor: spec.shadingToony ?? 0.95,
         transparent: !!spec.transparent, alphaTest: spec.alphaTest ?? 0,
