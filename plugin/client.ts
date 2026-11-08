@@ -29,6 +29,7 @@ interface PluginSettings {
   canvasToggle?: boolean
   canvasToggleKey?: string
   dragKey?: string
+  avatarModelDir?: string
   tts?: TtsSettings
 }
 /** 말풍선 음성 설정 (plugins/dsh-tts 설정과 같은 모양) */
@@ -277,6 +278,8 @@ function characterPrefs(value: PluginSettings) {
     intro: { enabled: value.intro !== false },
     // 모바일(터치 전용) 화면에서 캐릭터를 숨길지: 캐릭터가 매 프레임 읽는다 (기본 표시)
     mobile: { enabled: value.mobileCharacter !== false },
+    // 실험: 3D 모델 폴더가 있으면 창 안 캐릭터를 3D 렌더러로 (캐릭터가 처음 뜰 때만 읽음)
+    avatar: { enabled: typeof value.avatarModelDir === 'string' && value.avatarModelDir.trim() !== '' },
     // 캐릭터 이동 보조 키: 포인터 이벤트마다 읽는다. 빈 문자열이면 '이동 키 없음'
     drag: { key: value.dragKey ?? 'Alt' },
   }
