@@ -322,22 +322,43 @@ export async function createThreeRig({ base, life, canvas, W, H, pet }: {
   let lastTick = performance.now();
   const keyOf = channelKeyOf;
   const euler = new THREE.Euler(), deltaQ = new THREE.Quaternion(), parentQ = new THREE.Quaternion(), worldQ = new THREE.Quaternion();
-  /** 이번 프레임 채널 값으로 뼈 회전 (고개는 목 40%·머리 60%로 나눔) */
-  const applyBones = () => {
+  // 고개 채널은 Live2D 물리 입력값(±30)이라 실제 각도로 그대로 쓰면 크고 딱딱함 → 배율을 줄이고 관성을 줘서 따라가게 함
+  const HEAD_GAIN = { yaw: 0.6, pitch: 0.5, roll: 0.5 }, HEAD_FOLLOW = 7;   // 배율, 따라가는 빠르기(초당)
+  /** 목·머리의 지금 덧씌움 회전 (목표 회전 쪽으로 slerp로 따라감) */
+  const smoothed = new Map<HumanBone, THREE.Quaternion>([["neck", new THREE.Quaternion()], ["head", new THREE.Quaternion()]]);
+  /**
+   * 덧씌울 회전을 뼈의 지금 자세(애니메이션 포함) 월드 회전 앞에 곱함: L' = P⁻¹ × D × P × L
+   * @param delta 월드 축 기준 회전
+   */
+  const applyDelta = (node: THREE.Object3D, delta: THREE.Quaternion) => {
+    node.parent!.getWorldQuaternion(parentQ);
+    worldQ.copy(parentQ).multiply(node.quaternion).premultiply(delta);
+    node.quaternion.copy(parentQ.invert().multiply(worldQ));
+  };
+  /**
+   * 이번 프레임 채널 값으로 뼈 회전 (고개는 목 40%·머리 60%로 나누고 쿼터니언 slerp로 따라감)
+   * @param dt 지난 프레임부터 흐른 시간(초)
+   */
+  const applyBones = (dt: number) => {
     const v = (key: string) => values.get(key) || 0;
-    const yaw = clamp(v("headTurn"), -30, 30), pitch = clamp(v("headTilt"), -30, 30), roll = clamp(v("headRoll"), -30, 30);
-    /** 월드 축 회전(도) 적용 */
+    const yaw = clamp(v("headTurn"), -30, 30) * HEAD_GAIN.yaw, pitch = clamp(v("headTilt"), -30, 30) * HEAD_GAIN.pitch, roll = clamp(v("headRoll"), -30, 30) * HEAD_GAIN.roll;
+    const follow = Math.min(1, dt * HEAD_FOLLOW);
+    /** 고개 뼈: 목표 회전을 쿼터니언으로 만들고 지금 회전에서 slerp로 따라가 적용 */
+    const turnSmooth = (name: HumanBone, share: number) => {
+      const node = bone(name), current = smoothed.get(name)!;
+      if (!node || !node.parent) return;
+      deltaQ.setFromEuler(euler.set(-pitch * share * DEG, yaw * share * DEG, roll * share * DEG, "YXZ"));
+      current.slerp(deltaQ, follow);
+      applyDelta(node, current);
+    };
+    /** 월드 축 회전(도) 바로 적용 */
     const turn = (name: HumanBone, x: number, y: number, z: number) => {
       const node = bone(name);
       if (!node || !node.parent || (!x && !y && !z)) return;
-      deltaQ.setFromEuler(euler.set(x * DEG, y * DEG, z * DEG, "YXZ"));
-      // 지금 자세(애니메이션 포함)의 월드 회전 앞에 D를 곱함: L' = P⁻¹ × D × P × L
-      node.parent.getWorldQuaternion(parentQ);
-      worldQ.copy(parentQ).multiply(node.quaternion).premultiply(deltaQ);
-      node.quaternion.copy(parentQ.invert().multiply(worldQ));
+      applyDelta(node, deltaQ.setFromEuler(euler.set(x * DEG, y * DEG, z * DEG, "YXZ")));
     };
-    turn("neck", -pitch * 0.4, yaw * 0.4, roll * 0.4);
-    turn("head", -pitch * 0.6, yaw * 0.6, roll * 0.6);
+    turnSmooth("neck", 0.4);
+    turnSmooth("head", 0.6);
     turn("chest", v("bodyLean") * 0.25 - v("breath") * 1.2, v("bodyShiftX") * 0.2, 0);
     turn("spine", 0, 0, v("bodyShiftZ") * 0.2);
     const eyeX = clamp(v("eyeLookX"), -1, 1) * 18, eyeY = clamp(v("eyeLookY"), -1, 1) * 14;
@@ -429,7 +450,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet }: {
       for (const [node, local] of rest) node.quaternion.copy(local);   // 애니메이션 트랙이 없는 뼈(눈 등)도 매 프레임 같은 자리에서 시작
       endGesture(performance.now());
       mixer.update(dt);
-      applyBones();
+      applyBones(dt);
       applyMorphs();
       root.updateMatrixWorld(true);
       if (dt > 0) springs.step(dt);
