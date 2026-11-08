@@ -37,6 +37,10 @@ export type AvatarProfile = {
   armDown?: number;
   /** 지원하는 기능 (기본은 없음) */
   features?: RigFeature[];
+  /** 외곽선 (MToon 외곽선): width = 모델 키 대비 두께, color = 선 색, skip = 외곽선을 빼는 재질 이름 */
+  outline?: { width: number; color?: string; skip?: string[] };
+  /** 림 라이트: color = 색, power = 가장자리에 모이는 정도(클수록 얇음), mix = 조명 영향 */
+  rim?: { color: string; power?: number; mix?: number };
   /** 몸 애니메이션 (폴더 기준 FBX): idle = 대기 반복 클립, gestures = 몸짓 이름(동작 코드의 play) → 클립 */
   animations?: { idle?: string; gestures?: Record<string, string> };
   /** 흔들림(스프링) 사슬: roots 아래 모든 뼈. stiffness = 제자리로 돌아오는 힘, drag = 감쇠(0~1), gravity = 아래로 끄는 힘 */
@@ -181,6 +185,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet }: {
         shadingShiftFactor: spec.shadingShift ?? -0.05, shadingToonyFactor: spec.shadingToony ?? 0.95,
         transparent: !!spec.transparent, alphaTest: spec.alphaTest ?? 0,
         side: spec.doubleSided ? THREE.DoubleSide : THREE.FrontSide,
+        ...(profile.rim ? { parametricRimColorFactor: new THREE.Color(profile.rim.color), parametricRimFresnelPowerFactor: profile.rim.power ?? 4, rimLightingMixFactor: profile.rim.mix ?? 0.5 } : {}),
       });
       toon.name = material.name;
       toon.visible = !spec.hidden;
@@ -189,6 +194,36 @@ export async function createThreeRig({ base, life, canvas, W, H, pet }: {
     };
     mesh.material = Array.isArray(mesh.material) ? mesh.material.map(swap) : swap(mesh.material);
   });
+
+  // ---------- 외곽선: 같은 뼈·모프를 쓰는 복제 메시에 MToon 외곽선 재질(뒤집어 부풀려 그림) ----------
+  if (profile.outline) {
+    const height = new THREE.Box3().setFromObject(root).getSize(new THREE.Vector3()).y;
+    const skip = new Set(profile.outline.skip || []);
+    const outlineMaterial = (source: THREE.Material) => {
+      const material = new MToonMaterial({
+        isOutline: true, outlineWidthMode: "worldCoordinates", outlineWidthFactor: profile.outline!.width * height,
+        outlineColorFactor: new THREE.Color(profile.outline!.color || "#2b2430"), outlineLightingMixFactor: 0.3, side: THREE.BackSide,
+        alphaTest: (source as THREE.Material & { alphaTest?: number }).alphaTest ?? 0,
+        ...((source as MToonMaterial).map ? { map: (source as MToonMaterial).map! } : {}),
+      });
+      material.visible = source.visible && !skip.has(source.name);
+      life.add(() => material.dispose());
+      return material;
+    };
+    const meshes: THREE.SkinnedMesh[] = [];
+    root.traverse((node) => { const mesh = node as THREE.SkinnedMesh; if (mesh.isSkinnedMesh && mesh.visible && !hidden.has(mesh.parent?.name || "")) meshes.push(mesh); });
+    for (const mesh of meshes) {
+      const materials = ([] as THREE.Material[]).concat(mesh.material);
+      const outline = new THREE.SkinnedMesh(mesh.geometry, Array.isArray(mesh.material) ? materials.map(outlineMaterial) : outlineMaterial(materials[0]));
+      outline.bind(mesh.skeleton, mesh.bindMatrix);
+      outline.morphTargetInfluences = mesh.morphTargetInfluences;   // 같은 배열을 써서 표정·옷 모프를 그대로 따름
+      outline.morphTargetDictionary = mesh.morphTargetDictionary;
+      outline.frustumCulled = false; outline.renderOrder = -1;
+      outline.name = mesh.name + "__outline";
+      mesh.parent!.add(outline);
+      outline.position.copy(mesh.position); outline.quaternion.copy(mesh.quaternion); outline.scale.copy(mesh.scale);
+    }
+  }
 
   // ---------- 뼈 ----------
   const byName = new Map<string, THREE.Object3D>();
