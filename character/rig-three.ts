@@ -22,7 +22,9 @@ export type AvatarProfile = {
   /** 숨길 오브젝트 이름 (외곽선용 복제 메시 등) */
   hide?: string[];
   /** 재질 이름 → MToon 설정 (텍스처는 폴더 기준 상대 경로) */
-  materials?: Record<string, { map?: string; shade?: string; ao?: string; aoScale?: number; alphaTest?: number; transparent?: boolean; shadingShift?: number; shadingToony?: number; hidden?: boolean; doubleSided?: boolean }>;
+  materials?: Record<string, { map?: string; shade?: string; ao?: string; aoScale?: number;
+    /** UTS HighColor(스페큘러 하이라이트): color = 색, power = 날카로움(0~1, UTS _HighColor_Power), mask = 마스크 맵, onShadow = 그림자 쪽 세기, strength = 전체 세기(장면 빛 세기 보정) */
+    highColor?: { color: string; power?: number; mask?: string; onShadow?: number; strength?: number }; alphaTest?: number; transparent?: boolean; shadingShift?: number; shadingToony?: number; hidden?: boolean; doubleSided?: boolean }>;
   /** 사람형 뼈 → 모델 뼈 이름 */
   bones: Partial<Record<HumanBone, string>>;
   /** 의미 채널(PARAMS 키, 모음은 mouthVowel.A 등) → 모프 대응 */
@@ -186,24 +188,53 @@ export async function createThreeRig({ base, life, canvas, W, H, pet }: {
     faceSdfMap: { value: profile.faceSdf ? texture(profile.faceSdf.map, true)! : null },
     faceSdfThreshold: { value: 0.5 }, faceSdfUseR: { value: 1 }, faceSdfSoft: { value: profile.faceSdf?.softness ?? 0.02 },
   };
-  /** MToon 재질의 그림자 판정(getShading) 뒤에 SDF 판정을 덧붙임. R·G가 모두 0인 곳(귀·목 등)은 원래 조명 그대로 */
-  const attachFaceSdf = (material: MToonMaterial) => {
-    const mtoonCompile = material.onBeforeCompile.bind(material);   // MToon이 버전 상수 등을 채우는 원래 단계는 먼저 실행
-    material.onBeforeCompile = (shader, renderer) => {
-      mtoonCompile(shader, renderer);
-      Object.assign(shader.uniforms, faceSdfUniforms);
-      shader.fragmentShader = "#define USE_FACE_SDF\nuniform sampler2D faceSdfMap;\nuniform float faceSdfThreshold;\nuniform float faceSdfUseR;\nuniform float faceSdfSoft;\n" +
-        shader.fragmentShader.replaceAll("float shading = getShading( dotNL, shadow, material.shadingShift );", `float shading = getShading( dotNL, shadow, material.shadingShift );
-    #if defined( USE_FACE_SDF ) && defined( MTOON_USE_UV )
+  type HighColorSpec = NonNullable<NonNullable<AvatarProfile["materials"]>[string]["highColor"]>;
+  /**
+   * MToon 재질 셰이더에 조각 덧붙이기 (원래 MToon onBeforeCompile을 먼저 실행)
+   * sdf: 그림자 판정(getShading)을 얼굴 SDF 판정으로 바꿈. R·G가 모두 0인 곳(귀·목 등)은 원래 조명 그대로
+   * highColor: UTS2 HighColor처럼 half-Lambert(N·H)를 거듭제곱한 하이라이트를 빛 색·마스크와 곱해 더하고, 그림자 쪽은 onShadow만큼 줄임
+   */
+  const extendMToon = (material: MToonMaterial, parts: { sdf?: boolean; highColor?: HighColorSpec }) => {
+    const uniforms: Record<string, THREE.IUniform> = {};
+    let head = "", body = "";
+    if (parts.sdf) {
+      Object.assign(uniforms, faceSdfUniforms);
+      head += "uniform sampler2D faceSdfMap;\nuniform float faceSdfThreshold;\nuniform float faceSdfUseR;\nuniform float faceSdfSoft;\n";
+      body += `
+    #ifdef MTOON_USE_UV
       vec3 sdfTexel = texture2D( faceSdfMap, vUv ).rgb;
       if ( max( sdfTexel.r, sdfTexel.g ) > 0.02 ) {
         float sdfValue = mix( sdfTexel.g, sdfTexel.r, faceSdfUseR );
         shading = smoothstep( faceSdfThreshold - faceSdfSoft, faceSdfThreshold + faceSdfSoft, sdfValue ) * shadow;
       }
-    #endif`);
+    #endif`;
+    }
+    if (parts.highColor) {
+      const spec = parts.highColor, mask = texture(spec.mask, true);
+      Object.assign(uniforms, {
+        highColor: { value: new THREE.Color(spec.color) }, highColorExponent: { value: Math.pow(2, 11 - 10 * (spec.power ?? 0.7)) },
+        highColorOnShadow: { value: spec.onShadow ?? 0.5 }, highColorMask: { value: mask ?? null }, highColorStrength: { value: spec.strength ?? 1 },
+      });
+      head += "uniform vec3 highColor;\nuniform float highColorExponent;\nuniform float highColorOnShadow;\nuniform float highColorStrength;\n" + (mask ? "#define USE_HIGHCOLOR_MASK\nuniform sampler2D highColorMask;\n" : "");
+      body += `
+    {
+      float highHalfLambert = 0.5 * dot( normalize( directLight.direction + geometryViewDir ), geometryNormal ) + 0.5;
+      float highAmount = pow( clamp( highHalfLambert, 0.0, 1.0 ), highColorExponent );
+      #if defined( USE_HIGHCOLOR_MASK ) && defined( MTOON_USE_UV )
+        highAmount *= texture2D( highColorMask, vUv ).g;
+      #endif
+      reflectedLight.directDiffuse += highColor * directLight.color * highAmount * highColorStrength * mix( highColorOnShadow, 1.0, shading );
+    }`;
+    }
+    const mtoonCompile = material.onBeforeCompile.bind(material);   // MToon이 버전 상수 등을 채우는 원래 단계는 먼저 실행
+    material.onBeforeCompile = (shader, renderer) => {
+      mtoonCompile(shader, renderer);
+      Object.assign(shader.uniforms, uniforms);
+      const anchor = "float shading = getShading( dotNL, shadow, material.shadingShift );";
+      shader.fragmentShader = head + shader.fragmentShader.replaceAll(anchor, anchor + body);
     };
-    const key = material.customProgramCacheKey.bind(material);
-    material.customProgramCacheKey = () => key() + "|faceSdf";
+    const key = material.customProgramCacheKey.bind(material), tag = (parts.sdf ? "|sdf" : "") + (parts.highColor ? "|high" + (parts.highColor.mask ? "M" : "") : "");
+    material.customProgramCacheKey = () => key() + tag;
   };
   root.traverse((node) => {
     if (hidden.has(node.name)) node.visible = false;
@@ -224,7 +255,8 @@ export async function createThreeRig({ base, life, canvas, W, H, pet }: {
         ...(profile.rim ? { parametricRimColorFactor: new THREE.Color(profile.rim.color), parametricRimFresnelPowerFactor: profile.rim.power ?? 4, rimLightingMixFactor: profile.rim.mix ?? 0.5 } : {}),
       });
       toon.name = material.name;
-      if (profile.faceSdf && profile.faceSdf.material === material.name) attachFaceSdf(toon);
+      const sdf = !!profile.faceSdf && profile.faceSdf.material === material.name;
+      if (sdf || spec.highColor) extendMToon(toon, { sdf, highColor: spec.highColor });
       toon.visible = !spec.hidden;
       material.dispose();
       return toon;
