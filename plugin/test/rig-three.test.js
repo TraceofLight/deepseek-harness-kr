@@ -107,3 +107,14 @@ test('흔들림 뼈는 움직이는 충돌체를 뚫지 않고, 처음부터 가
     assert.ok(tip.distanceTo(leg.position) >= 0.6 - 0.02, `${i}프레임: 끝점이 충돌체 안으로 들어감`)
   }
 })
+
+test('겹치면 깨지는 모프 묶음은 앞쪽을 우선하고 합이 1을 넘지 않게 뒤쪽을 줄인다', async () => {
+  const { limitExclusiveMorphs } = await import('../../character/rig-three.ts')
+  const weights = new Map([['Eye_Smile', 0.6], ['Eye_Close_L', 1], ['Eye_Close_R', 0.3], ['Mouth_A', 0.8]])
+  limitExclusiveMorphs(weights, [['Eye_Smile', 'Eye_Close_L'], ['Eye_Smile', 'Eye_Close_R']])
+  assert.ok(Math.abs(weights.get('Eye_Close_L') - 0.4) < 1e-9, '감기는 남은 0.4만')
+  assert.equal(weights.get('Eye_Close_R'), 0.3, '합이 1 안이면 그대로')
+  assert.equal(weights.get('Eye_Smile'), 0.6, '앞쪽은 그대로')
+  assert.equal(weights.get('Mouth_A'), 0.8, '묶음 밖은 그대로')
+  assert.equal(weights.has('Eye_Blink'), false, '없는 모프는 만들지 않음')
+})

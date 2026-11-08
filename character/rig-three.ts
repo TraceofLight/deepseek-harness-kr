@@ -39,6 +39,8 @@ export type AvatarProfile = {
   armDown?: number;
   /** 지원하는 기능 (기본은 없음) */
   features?: RigFeature[];
+  /** 함께 켜면 모양이 겹쳐 깨지는 모프 묶음 (예: 눈웃음 + 눈 감기). 앞쪽 모프가 우선이고, 합이 1을 넘으면 뒤쪽을 줄임 */
+  exclusiveMorphs?: string[][];
   /**
    * 외곽선 (MToon 외곽선): width = 모델 키 대비 두께, color = 선 색, skip = 외곽선을 빼는 재질 이름
    * normals = smooth(같은 위치 법선 평균, 기본) 또는 model(모델에 든 "<메시>_Outline" 메시의 다듬은 법선과 정점 색 R 두께 배율)
@@ -151,6 +153,22 @@ function outlineGeometry(source: THREE.BufferGeometry, tolerance: number) {
   if (source.morphAttributes.position) geometry.morphAttributes.position = source.morphAttributes.position;
   geometry.morphTargetsRelative = source.morphTargetsRelative;
   return geometry;
+}
+
+/**
+ * 겹치면 깨지는 모프 묶음의 합을 1 이하로: 묶음 앞쪽부터 남은 몫 안에서만 씀
+ * @param weights 모프 이름 → 세기 (바로 고침)
+ * @param groups 묶음 목록 (앞쪽 모프 우선)
+ */
+export function limitExclusiveMorphs(weights: Map<string, number>, groups: string[][] = []) {
+  for (const group of groups) {
+    let left = 1;
+    for (const morph of group) {
+      const w = clamp(weights.get(morph) || 0, 0, left);
+      if (weights.has(morph)) weights.set(morph, w);
+      left -= w;
+    }
+  }
 }
 
 /**
@@ -569,7 +587,8 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
   const headLocalUp = (() => { const node = bone("head"); return node ? new THREE.Vector3(0, fullH * 0.045, 0).applyQuaternion(node.getWorldQuaternion(new THREE.Quaternion()).invert()) : undefined; })();
   const COLLIDERS: Array<[ColliderGroup, HumanBone, HumanBone | null, number, THREE.Vector3?]> = [
     ["head", "head", null, 0.05, headLocalUp],
-    ["body", "chest", "neck", 0.06], ["body", "spine", "chest", 0.06], ["body", "hips", "spine", 0.055],
+    // 가슴은 원본 PhysBone 충돌체(가슴 구 13cm·11cm ≈ 키의 8%·7%)처럼 크게: 앞머리가 조끼 앞면을 뚫지 않게
+    ["body", "chest", null, 0.08], ["body", "chest", "neck", 0.05], ["body", "spine", "chest", 0.065], ["body", "hips", "spine", 0.06],
     ["legs", "leftUpperLeg", "rightUpperLeg", 0.035],
     ["legs", "leftUpperLeg", "leftLowerLeg", 0.045], ["legs", "rightUpperLeg", "rightLowerLeg", 0.045],
     ["legs", "leftLowerLeg", "leftFoot", 0.03], ["legs", "rightLowerLeg", "rightFoot", 0.03],
@@ -665,6 +684,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
       const on = clamp(raw / ((item && item.on) || 1), 0, 1);
       for (const binding of bindings) add(binding.morph, binding.invert ? 1 - on : on);
     }
+    limitExclusiveMorphs(weights, profile.exclusiveMorphs);
     for (const slots of morphSlots.values()) for (const [mesh, index] of slots) mesh.morphTargetInfluences![index] = 0;
     for (const [morph, w] of weights) for (const [mesh, index] of morphSlots.get(morph) || []) mesh.morphTargetInfluences![index] = clamp(w, 0, 1);
   };
