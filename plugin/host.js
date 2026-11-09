@@ -124,7 +124,7 @@ export const STATUS_PATH = '/deepseek-harness-kr/status'
 export const AVATAR_PATH = '/deepseek-harness-kr/avatar'
 const assets = fileURLToPath(new URL('../assets/', import.meta.url))
 /** @type {Record<string, string | undefined>} */
-const types = { '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.png': 'image/png', '.moc3': 'application/octet-stream', '.fbx': 'application/octet-stream', '.vrm': 'application/octet-stream', '.glb': 'model/gltf-binary', '.jpg': 'image/jpeg' }
+const types = { '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.png': 'image/png', '.moc3': 'application/octet-stream', '.fbx': 'application/octet-stream', '.vrm': 'application/octet-stream', '.glb': 'model/gltf-binary', '.gltf': 'model/gltf+json', '.bin': 'application/octet-stream', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp' }
 
 /**
  * 자산 파일 요청 처리기 생성. GET·HEAD만 받고 ETag가 같으면 304

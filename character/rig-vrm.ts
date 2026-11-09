@@ -1,9 +1,10 @@
 // VRM(0.x·1.0) 모델 불러오기. @pixiv/three-vrm(MIT, © pixiv)은 사람형 뼈·표정·흔들림 뼈·노드 제약·메타를 읽고 돌리는 데만 쓰고,
-// MToon 재질은 three-vrm이 읽은 값을 자체 툰 재질(toon-material.ts)로 옮겨 그림. rig-three.ts가 모델 파일이 .vrm일 때 부름.
+// MToon 재질은 three-vrm이 읽은 값을 자체 툰 재질(toon-material.ts)로 옮겨 그리고, 실사 셰이딩이면 물리 재질(pbr-material.ts)로 옮김. rig-three.ts가 모델 파일이 .vrm일 때 부름.
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { VRMLoaderPlugin, VRMUtils, type MToonMaterial, type VRM } from "@pixiv/three-vrm";
 import { createOutlineMaterial, createToonMaterial, updateUvTransforms, type OutlineMaterialOptions, type ToonMaterialOptions } from "./toon-material.ts";
+import { standardFrom, type Shading } from "./pbr-material.ts";
 import type { AvatarProfile, HumanBone, MorphBinding } from "./rig-three.ts";
 import type { Lifetime } from "./lifetime.ts";
 
@@ -173,6 +174,37 @@ export function convertMToonMaterials(scene: THREE.Object3D) {
   return pairs;
 }
 
+/**
+ * MToon 재질 하나를 물리 재질로 바꿈 (실사 셰이딩). 바탕색·발광 색은 같은 Color 객체를 써서 VRM 표정의 재질 색 바인드가 그대로 걸림
+ * MToon 외곽선 재질은 숨김 (실사 셰이딩은 외곽선 기본 꺼짐, avatar.json outline으로만 켬)
+ */
+export function convertMToonToStandard(source: MToonMaterial) {
+  const material = standardFrom(source);
+  material.color = source.color; material.emissive = source.emissive;
+  material.visible = source.visible && !source.isOutline;
+  source.dispose();
+  return material;
+}
+
+/**
+ * 장면의 모든 MToon 재질을 물리 재질로 바꿈 (실사 셰이딩, MToon이 아닌 재질은 그대로)
+ * @returns [물리 재질, 원래 MToon] 목록 (매 프레임 불투명도를 옮겨 옴. 텍스처 변환은 three.js 기본 재질이 텍스처에서 바로 읽음)
+ */
+export function convertMToonMaterialsToStandard(scene: THREE.Object3D) {
+  const pairs: Array<[THREE.MeshStandardMaterial, MToonMaterial]> = [];
+  const swap = (material: THREE.Material) => {
+    if (!(material as MToonMaterial).isMToonMaterial) return material;
+    const standard = convertMToonToStandard(material as MToonMaterial);
+    pairs.push([standard, material as MToonMaterial]);
+    return standard;
+  };
+  scene.traverse((node) => {
+    const mesh = node as THREE.Mesh;
+    if (mesh.isMesh) mesh.material = Array.isArray(mesh.material) ? mesh.material.map(swap) : swap(mesh.material);
+  });
+  return pairs;
+}
+
 /** VRM에서 프로필 합성용 값 뽑기 */
 function vrmInfoOf(vrm: VRM): VrmInfo {
   const bones: Partial<Record<HumanBone, string>> = {};
@@ -211,9 +243,9 @@ export type VrmRuntime = {
 /**
  * VRM 런타임 만들기 (사람형 뼈는 raw 뼈를 직접 움직이므로 humanoid.update는 부르지 않음)
  * @param springs VRM 흔들림 뼈를 쓸지 (avatar.json springs가 없을 때)
- * @param pairs 툰 재질로 바꾼 [툰, 원래 MToon] 목록
+ * @param syncMaterials 바꾼 재질에 MToon 값(표정 바인드가 바꾼 불투명도·텍스처 변환)을 옮기는 함수
  */
-function createVrmRuntime(vrm: VRM, nodes: Map<HumanBone, THREE.Object3D>, springs: boolean, pairs: Array<[THREE.ShaderMaterial, MToonMaterial]>): VrmRuntime {
+function createVrmRuntime(vrm: VRM, nodes: Map<HumanBone, THREE.Object3D>, springs: boolean, syncMaterials: () => void): VrmRuntime {
   const expressionNames = new Set((vrm.expressionManager?.expressions || []).map((expression) => expression.expressionName));
   const springBones = springs ? vrm.springBoneManager : undefined;
   return {
@@ -223,7 +255,7 @@ function createVrmRuntime(vrm: VRM, nodes: Map<HumanBone, THREE.Object3D>, sprin
       for (const name of expressionNames) vrm.expressionManager!.setValue(name, Math.min(1, Math.max(0, weights.get(name) || 0)));
     },
     update(dt) {
-      for (const [toon, source] of pairs) { toon.uniforms.opacity.value = source.opacity; updateUvTransforms(toon.uniforms); }
+      syncMaterials();
       vrm.expressionManager?.update();
       vrm.nodeConstraintManager?.update();
       springBones?.update(dt);
@@ -235,9 +267,10 @@ function createVrmRuntime(vrm: VRM, nodes: Map<HumanBone, THREE.Object3D>, sprin
  * VRM 불러오기: three-vrm으로 읽고, 프로필 합성·재질 변환·런타임 준비
  * @param url 모델 파일 주소
  * @param overrides avatar.json
+ * @param shading 셰이딩 (toon = MToon을 툰 재질로, pbr = 물리 재질로)
  * @returns 모델 장면(아직 방향 보정 전), 합성 프로필, 런타임
  */
-export async function loadVrm(url: string, overrides: VrmOverrides, life: Lifetime) {
+export async function loadVrm(url: string, overrides: VrmOverrides, life: Lifetime, shading: Shading = "toon") {
   const loader = new GLTFLoader();
   loader.register((parser) => new VRMLoaderPlugin(parser, { autoUpdateHumanBones: false }));
   const gltf = await loader.loadAsync(url);
@@ -246,7 +279,14 @@ export async function loadVrm(url: string, overrides: VrmOverrides, life: Lifeti
   vrm.humanoid.normalizedHumanBonesRoot.removeFromParent();   // 정규화 뼈는 안 써서 장면에서 뺌
   life.add(() => VRMUtils.deepDispose(vrm.scene));   // 텍스처까지 정리
   const profile = profileFromVrm(vrmInfoOf(vrm), overrides);
-  const pairs = convertMToonMaterials(vrm.scene);
-  const runtime = createVrmRuntime(vrm, humanNodes(vrm, overrides), !overrides.springs, pairs);
+  let syncMaterials: () => void;
+  if (shading === "pbr") {
+    const pairs = convertMToonMaterialsToStandard(vrm.scene);
+    syncMaterials = () => { for (const [standard, source] of pairs) standard.opacity = source.opacity; };
+  } else {
+    const pairs = convertMToonMaterials(vrm.scene);
+    syncMaterials = () => { for (const [toon, source] of pairs) { toon.uniforms.opacity.value = source.opacity; updateUvTransforms(toon.uniforms); } };
+  }
+  const runtime = createVrmRuntime(vrm, humanNodes(vrm, overrides), !overrides.springs, syncMaterials);
   return { model: vrm.scene, profile, runtime };
 }

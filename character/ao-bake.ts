@@ -1,10 +1,11 @@
 // 3D 모델 정점 앰비언트 오클루전(AO) 굽기. 모델을 불러와 방향을 맞춘 직후(팔 내림·애니메이션 전, 기본 T자 자세) GPU로 한 번 굽고
-// 결과(정점마다 0~255)는 툰 재질의 bakedAo 속성으로 씀(toon-material.ts TOON_BAKED_AO). 굽기 결과는 호스트 캐시 파일로 남김(plugin/avatar-cache.js).
+// 결과(정점마다 0~255)는 툰 재질의 bakedAo 속성으로 씀(toon-material.ts TOON_BAKED_AO, 실사 셰이딩은 pbr-material.ts DSC_BAKED_AO). 굽기 결과는 호스트 캐시 파일로 남김(plugin/avatar-cache.js).
 // 방법(오프라인 굽기 도구식): 구 위 Fibonacci 방향마다 정사영 깊이 맵을 그리고, 정점 점 그리기로 그 방향이 막혔는지 누적한 뒤 한 번 읽음.
 // 범위가 있는 오브스큐런스: 막는 면이 정점에서 그 방향으로 radius 안에 있을 때만(멀어질수록 약하게) 막힌 것으로 봄 → 몸 전체가 자기 몸에 어두워지지 않음.
 import * as THREE from "three";
 import { aoCacheMatches, decodeAoCache, encodeAoCache } from "../shared/ao-cache.js";
-import { enableBakedAo, mapOf, type BakedAoUniforms } from "./toon-material.ts";
+import { disableBakedAo, enableBakedAo, mapOf, type BakedAoUniforms } from "./toon-material.ts";
+import { disablePbrBakedAo, enablePbrBakedAo, isPbrAoSurface, isStandard } from "./pbr-material.ts";
 
 /** 굽기 방식 버전 (굽는 방법이 바뀌면 올려 예전 캐시를 버림, 굽기 설정 해시에 들어감) */
 export const AO_BAKE_VERSION = 1;
@@ -68,11 +69,17 @@ export function aoParamsHash(params: AoBakeParams, extra: unknown = null) {
 
 /** 재질 목록 (한 재질이면 배열로) */
 const materialsOf = (mesh: THREE.Mesh) => ([] as THREE.Material[]).concat(mesh.material);
-/** AO를 받는 표면 재질인지: 보이고, 불투명하고, 외곽선이 아닌 툰 재질 */
+/** AO를 받는 표면 재질인지: 보이고, 불투명하고, 외곽선이 아닌 툰 재질 또는 준비한 물리 재질(실사 셰이딩, pbr-material.ts) */
 export const isAoSurface = (material: THREE.Material) => {
   const shader = material as THREE.ShaderMaterial;
-  return material.visible && !material.transparent && !!shader.uniforms?.shadingShift && !("OUTLINE" in (shader.defines || {}));
+  return (material.visible && !material.transparent && !!shader.uniforms?.shadingShift && !("OUTLINE" in (shader.defines || {}))) || isPbrAoSurface(material);
 };
+/** 표면 재질에 구운 AO 켜기 (툰 재질·물리 재질 각자의 방식) */
+export const enableSurfaceAo = (material: THREE.Material, uniforms: BakedAoUniforms, debug = false) =>
+  isStandard(material) ? enablePbrBakedAo(material, uniforms, debug) : enableBakedAo(material as THREE.ShaderMaterial, uniforms, debug);
+/** 표면 재질의 구운 AO 끄기 */
+export const disableSurfaceAo = (material: THREE.Material) =>
+  isStandard(material) ? disablePbrBakedAo(material) : disableBakedAo(material as THREE.ShaderMaterial);
 /** 노드와 모든 조상이 보이는지 */
 const shownInScene = (node: THREE.Object3D | null) => {
   for (; node; node = node.parent) if (!node.visible) return false;
@@ -372,7 +379,7 @@ export function applyBakedAo(root: THREE.Object3D, meshes: THREE.Mesh[], data: U
   root.traverse((node) => {
     const mesh = node as THREE.Mesh;
     if (!mesh.isMesh || !baked.has(mesh.geometry)) return;
-    for (const material of materialsOf(mesh)) if (isAoSurface(material) && !enabled.has(material)) { enableBakedAo(material as THREE.ShaderMaterial, uniforms, debug); enabled.add(material); }
+    for (const material of materialsOf(mesh)) if (isAoSurface(material) && !enabled.has(material)) { enableSurfaceAo(material, uniforms, debug); enabled.add(material); }
   });
   root.traverse((node) => {
     const mesh = node as THREE.Mesh;

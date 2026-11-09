@@ -1,14 +1,17 @@
-// 3D 모델(FBX·VRM) 렌더러. three.js FBXLoader(VRM은 rig-vrm.ts)로 모델을 불러와 자체 툰 재질(toon-material.ts)로 그리고, 동작 코드가 쓰는 채널을 뼈·모프로 옮김.
+// 3D 모델(FBX·VRM·glTF) 렌더러. three.js FBXLoader(VRM은 rig-vrm.ts, glTF는 rig-gltf.ts)로 모델을 불러와 자체 툰 재질(toon-material.ts) 또는 물리 재질(실사 셰이딩, pbr-material.ts)로 그리고,
+// 동작 코드가 쓰는 채널을 뼈·모프로 옮김.
 // 모델 파일과 모델별 대응표(avatar.json)는 저장소 밖 사용자 폴더에 있고, 플러그인 호스트가 /deepseek-harness-kr/avatar/로 서빙함.
 // 이 파일은 따로 묶여(assets/vendor/rig-three.js) 3D 모델을 켰을 때만 불러옴 (window.DscRigThree).
 import * as THREE from "three";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
-import { createBakedAoUniforms, createFaceSdfUniforms, createOutlineMaterial, createToonMaterial, disableBakedAo, enableBakedAo, mapOf, type FaceSdfUniforms, type ToonMaterialOptions } from "./toon-material.ts";
+import { createBakedAoUniforms, createFaceSdfUniforms, createOutlineMaterial, createToonMaterial, mapOf, updateUvTransforms, type FaceSdfUniforms, type ToonMaterialOptions } from "./toon-material.ts";
 import { PARAMS } from "./model-profile.ts";
 import { addBindingWeight, addTargetWeight, loadVrm, type VrmRuntime, type WeightSink } from "./rig-vrm.ts";
+import { loadGltf, toonOptionsFromSurface } from "./rig-gltf.ts";
+import { applyPbrSpec, convertsToStandard, isStandard, PBR_LIGHT, preparePbrMaterial, setupPbrScene, standardFrom, type Shading } from "./pbr-material.ts";
 import { OUTFIT_ITEMS } from "../shared/settings.js";
 import { createTaa } from "./taa.ts";
-import { aoParamsHash, aoReceivers, aoSettingsOf, aoStrengthOf, applyBakedAo, bakeAo, loadAoCache, saveAoCache, type AoBakeParams, type AoOption } from "./ao-bake.ts";
+import { aoParamsHash, aoReceivers, aoSettingsOf, aoStrengthOf, applyBakedAo, bakeAo, disableSurfaceAo, enableSurfaceAo, loadAoCache, saveAoCache, type AoBakeParams, type AoOption } from "./ao-bake.ts";
 import { log } from "./log.ts";
 import { resolveGaze, type GazeOverrides } from "./gaze.ts";
 import type { Lifetime } from "./lifetime.ts";
@@ -25,11 +28,18 @@ export type HumanBone = "hips" | "spine" | "chest" | "neck" | "head" | "leftEye"
 export type MorphBinding = { morph?: string; expression?: string; map?: "linear" | "invert" | "positive" | "negative"; scale?: number };
 /** 모델 폴더의 avatar.json 형식 (모델별 대응표) */
 export type AvatarProfile = {
-  /** 모델 파일 (폴더 기준 상대 경로, FBX 또는 VRM. VRM은 이 값만 있어도 되고 나머지는 덮어쓰기) */
+  /** 모델 파일 (폴더 기준 상대 경로, FBX·VRM·glTF(.glb·.gltf). VRM은 이 값만 있어도 되고 나머지는 덮어쓰기) */
   model: string;
+  /** 셰이딩: toon = 자체 툰 재질, pbr = 물리 기반 재질 + 내장 실내 환경광 (실사). 기본은 glTF = pbr, VRM·FBX = toon */
+  shading?: Shading;
+  /**
+   * 실사(pbr) 셰이딩 설정: environment = 환경광(IBL) 세기(기본 0.8), exposure = 톤 매핑 노출(기본 1)
+   * unlit = 조명 없는 glTF 재질(KHR_materials_unlit)을 그대로 둘지(keep, 기본) 조명을 받는 물리 재질로 바꿀지(lit)
+   */
+  pbr?: { environment?: number; exposure?: number; unlit?: "keep" | "lit" };
   /** 숨길 오브젝트 이름 (외곽선용 복제 메시 등) */
   hide?: string[];
-  /** 재질 이름 → 툰 재질 설정 (텍스처는 폴더 기준 상대 경로) */
+  /** 재질 이름 → 재질 설정 (텍스처는 폴더 기준 상대 경로). 실사 셰이딩은 map·ao(AO 맵)·투명 처리·양면·숨김·스텐실·순서만 씀 */
   materials?: Record<string, { map?: string; shade?: string; ao?: string; aoScale?: number;
     /** UTS HighColor(스페큘러 하이라이트): color = 색, power = 날카로움(0~1, UTS _HighColor_Power), mask = 마스크 맵, onShadow = 그림자 쪽 세기, strength = 전체 세기(장면 빛 세기 보정), toon = 경계가 딱 떨어지는 툰 모드(UTS 스페큘러 끔) */
     highColor?: { color: string; power?: number; mask?: string; onShadow?: number; strength?: number; toon?: boolean }; alphaTest?: number; transparent?: boolean; shadingShift?: number; shadingToony?: number; hidden?: boolean; doubleSided?: boolean;
@@ -72,11 +82,11 @@ export type AvatarProfile = {
    * material = 적용할 재질 이름, map = SDF 맵(R·G = 양쪽 빛용 문턱값), swap = R·G가 맡는 쪽을 바꿈, softness = 경계 부드러움
    */
   faceSdf?: { material: string; map: string; swap?: boolean; softness?: number };
-  /** 조명: direction = 빛이 오는 방향(모델 기준, +x 화면 오른쪽·+y 위·+z 카메라 쪽), intensity·ambient = 세기 */
+  /** 조명: direction = 빛이 오는 방향(모델 기준, +x 화면 오른쪽·+y 위·+z 카메라 쪽), intensity·ambient = 세기 (기본 툰 2.2·0.9, 실사 1·0) */
   light?: { direction?: [number, number, number]; intensity?: number; ambient?: number };
   /** 림 라이트: color = 색, power = 가장자리에 모이는 정도(클수록 얇음), mix = 조명 영향 */
   rim?: { color: string; power?: number; mix?: number };
-  /** 몸 애니메이션 (폴더 기준 FBX): idle = 대기 반복 클립, gestures = 몸짓 이름(동작 코드의 play) → 클립 */
+  /** 몸 애니메이션 (폴더 기준 FBX·glTF 파일, 또는 glTF 모델에 든 클립 이름): idle = 대기 반복 클립, gestures = 몸짓 이름(동작 코드의 play) → 클립 */
   animations?: { idle?: string; gestures?: Record<string, string> };
   /** 흔들림(스프링) 사슬: roots 아래 모든 뼈. stiffness = 제자리로 돌아오는 힘, drag = 감쇠(0~1), gravity = 아래로 끄는 힘 */
   springs?: Array<{ roots: string[]; stiffness?: number; drag?: number; gravity?: number; radius?: number; colliders?: ColliderGroup[] }>;
@@ -492,18 +502,25 @@ export function tunedChannels(channels: Iterable<string>, raw: ReadonlyMap<strin
   return out;
 }
 
-/** 지원하는 모델 형식 (avatar.json model 확장자). 지금은 VRM(0.x·1.0)과 FBX만 */
-export const SUPPORTED_MODEL_FORMATS = [".vrm", ".fbx"] as const;
+/** 지원하는 모델 형식 (avatar.json model 확장자): VRM(0.x·1.0), FBX, glTF(.glb·.gltf, 압축 확장 제외) */
+export const SUPPORTED_MODEL_FORMATS = [".vrm", ".fbx", ".glb", ".gltf"] as const;
+/** 모델 형식 (불러오는 방법) */
+export type ModelFormat = "vrm" | "fbx" | "gltf";
 /**
  * 모델 파일 형식 확인: 지원하지 않는 확장자면 다른 로더의 엉뚱한 오류 대신 이 오류를 냄
- * @param file avatar.json model 값 @returns "vrm" 또는 "fbx"
+ * @param file avatar.json model 값 @returns "vrm", "fbx", "gltf"(.glb·.gltf)
  */
-export function modelFormat(file: string | undefined) {
+export function modelFormat(file: string | undefined): ModelFormat {
   const match = /\.([a-z0-9]+)$/i.exec(String(file ?? "").trim());
   const ext = match ? "." + match[1].toLowerCase() : "";
   if (!(SUPPORTED_MODEL_FORMATS as readonly string[]).includes(ext)) throw new Error(`지원하는 모델 형식은 ${SUPPORTED_MODEL_FORMATS.join("·")}입니다 (avatar.json model: ${file ?? "없음"})`);
-  return ext.slice(1) as "vrm" | "fbx";
+  return ext === ".glb" || ext === ".gltf" ? "gltf" : ext.slice(1) as "vrm" | "fbx";
 }
+/**
+ * 셰이딩 정하기: avatar.json shading이 toon·pbr이면 그것, 아니면 형식 기본값 (glTF = pbr, VRM·FBX = toon)
+ */
+export const shadingOf = (profile: Pick<AvatarProfile, "shading">, format: ModelFormat): Shading =>
+  profile.shading === "toon" || profile.shading === "pbr" ? profile.shading : format === "gltf" ? "pbr" : "toon";
 
 /**
  * 굽는 자세의 모프 세기: avatar.json baseMorphs(늘 거는 기본 옷차림 등) + 소품·옷을 모두 끈 기본 상태(invert 모프 = 1, 예: 안경 숨김)
@@ -589,7 +606,7 @@ export function createAoSwitch(prepare: () => Promise<{ uniforms: ReturnType<typ
   /** 켠 재질의 AO define을 켜거나 끔 */
   const show = (enabled: boolean) => {
     if (!ready || on === enabled) return;
-    for (const material of ready.materials) if (enabled) enableBakedAo(material as THREE.ShaderMaterial, ready.uniforms); else disableBakedAo(material as THREE.ShaderMaterial);
+    for (const material of ready.materials) if (enabled) enableSurfaceAo(material, ready.uniforms); else disableSurfaceAo(material);
     on = enabled;
   };
   return {
@@ -624,13 +641,16 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
   if (json.outline && outlineNormals) json.outline.normals = outlineNormals;
   const textureLoader = new THREE.TextureLoader();
   const loader = new FBXLoader();
-  // VRM: three-vrm으로 읽고 VRM 값으로 프로필을 합성(avatar.json은 덮어쓰기)·MToon을 툰 재질로 바꿈
-  const vrm = modelFormat(json.model) === "vrm" ? await loadVrm(base + json.model, json, life) : null;
+  const format = modelFormat(json.model), shading = shadingOf(json, format), pbr = shading === "pbr";
+  // VRM: three-vrm으로 읽고 VRM 값으로 프로필을 합성(avatar.json은 덮어쓰기)·MToon을 툰 재질(실사 셰이딩이면 물리 재질)로 바꿈
+  const vrm = format === "vrm" ? await loadVrm(base + json.model, json, life, shading) : null;
+  // glTF: 재질은 아래에서 셰이딩에 맞춰 바꾸고, 내장 클립은 avatar.json animations에 이름으로 씀
+  const gltf = format === "gltf" ? await loadGltf(base + json.model, life) : null;
   const profile = vrm ? vrm.profile : json;
   const vrmRuntime: VrmRuntime | null = vrm ? vrm.runtime : null;
-  const model = vrm ? vrm.model : await loader.loadAsync(base + profile.model);
+  const model = vrm ? vrm.model : gltf ? gltf.model : await loader.loadAsync(base + profile.model);
   if (life.stopped) return null;
-  if (!vrm) dedupeFbxBones(model);
+  if (format === "fbx") dedupeFbxBones(model);
   /** VRM 사람형 뼈 노드 (FBX·avatar.json으로 이름을 준 뼈는 없음 → 이름으로 찾음) */
   const vrmNode = (name: HumanBone) => vrmRuntime?.nodes.get(name);
   // 방향 보정 그룹: 파일 좌표계와 상관없이 위 +y·정면 +z·이름상 왼쪽 +x 로 (아래 코드는 이 화면 기준을 가정)
@@ -648,9 +668,10 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   const scene = new THREE.Scene();
   scene.add(root);
-  const light = new THREE.DirectionalLight(0xffffff, profile.light?.intensity ?? 2.2);
+  const light = new THREE.DirectionalLight(0xffffff, profile.light?.intensity ?? (pbr ? PBR_LIGHT.intensity : 2.2));
   light.position.set(...(profile.light?.direction ?? [0.6, 1.2, 1.6]));
-  scene.add(light, new THREE.AmbientLight(0xffffff, profile.light?.ambient ?? 0.9));
+  scene.add(light, new THREE.AmbientLight(0xffffff, profile.light?.ambient ?? (pbr ? PBR_LIGHT.ambient : 0.9)));
+  if (pbr) life.add(setupPbrScene(renderer, scene, profile.pbr));   // 실사: 내장 실내 환경광 + Neutral 톤 매핑
   // 행렬 갱신은 tick에서 프레임당 한 번만 (three.js가 render마다 장면 전체를 다시 갱신하지 않게). 조명은 움직이지 않아 지금 한 번
   scene.matrixWorldAutoUpdate = false;
   light.updateMatrixWorld();
@@ -664,7 +685,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
   });
   const taa = taaMode ? createTaa(renderer, life) : null;   // TAA는 MSAA 대신 지터·히스토리로 경계를 고름
 
-  // ---------- 재질: 툰 재질로 바꾸고 숨길 것은 숨김 ----------
+  // ---------- 재질: 셰이딩에 맞는 재질로 바꾸고 숨길 것은 숨김 ----------
   const textures = new Map<string, THREE.Texture>();
   const textureLoads: Array<Promise<void>> = [];   // 텍스처 다 받기 (AO 굽기의 알파 테스트가 바탕 맵을 읽음, 실패도 끝난 것으로)
   /** 텍스처 불러오기 시작 (다 받거나 실패하면 끝나는 약속을 textureLoads에 모음) */
@@ -684,8 +705,32 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
     return found;
   };
   const hidden = new Set(profile.hide || []);
-  // 얼굴 SDF 그림자 uniform (얼굴 재질이 같이 쓰고 매 프레임 머리·빛 방향으로 갱신)
-  const faceSdfUniforms = createFaceSdfUniforms(profile.faceSdf ? texture(profile.faceSdf.map, true)! : null, profile.faceSdf?.softness);
+  // 얼굴 SDF 그림자 uniform (툰 전용. 얼굴 재질이 같이 쓰고 매 프레임 머리·빛 방향으로 갱신)
+  const faceSdf = pbr ? undefined : profile.faceSdf;
+  const faceSdfUniforms = createFaceSdfUniforms(faceSdf ? texture(faceSdf.map, true)! : null, faceSdf?.softness);
+  let sourceAo = false;   // 모델 재질에 AO 맵이 있는지 (glTF occlusion 맵 등. 있으면 정점 AO를 굽지 않음)
+  /** 툰 셰이딩: glTF 재질은 모두, 그 밖(FBX·VRM)은 avatar.json에 설정이 있는 재질만 툰 재질로 (없으면 null = 그대로) */
+  const toonSurface = (material: THREE.Material, spec: MaterialSpec | undefined) => {
+    const sdf = faceSdf?.material === material.name ? faceSdfUniforms : undefined;
+    if (!gltf) return spec ? createToonMaterial(toonOptionsOf(material.name, spec, texture, profile.rim, sdf)) : null;
+    sourceAo ||= !!(material as THREE.MeshStandardMaterial).aoMap;
+    const options = toonOptionsFromSurface(material, spec, texture, profile.rim, sdf);
+    const toon = createToonMaterial(options);
+    if (options.uvTransforms) updateUvTransforms(toon.uniforms);
+    toon.visible = material.visible;
+    return toon;
+  };
+  /**
+   * 실사 셰이딩: Phong·Lambert(FBX)와 unlit(pbr.unlit = lit일 때)을 물리 재질로 바꾸고, avatar.json 맵·AO 맵·투명 처리·양면을 반영
+   * 물리 재질에는 구운 AO 끼워 넣기를 걸어 둠 (TAA 속도 출력보다 먼저)
+   */
+  const pbrSurface = (material: THREE.Material, spec: MaterialSpec | undefined) => {
+    sourceAo ||= !!(material as THREE.MeshStandardMaterial).aoMap;
+    const next = convertsToStandard(material, profile.pbr?.unlit) ? standardFrom(material) : material;
+    applyPbrSpec(next, spec, texture);
+    if (isStandard(next)) preparePbrMaterial(next);
+    return next;
+  };
   root.traverse((node) => {
     if (hidden.has(node.name)) node.visible = false;
     const mesh = node as THREE.Mesh;
@@ -693,13 +738,11 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
     mesh.frustumCulled = false;   // 뼈로 움직인 메시가 경계 밖으로 잘리지 않게
     const swap = (material: THREE.Material) => {
       const spec = profile.materials?.[material.name];
-      if (!spec) return material;
-      const sdf = !!profile.faceSdf && profile.faceSdf.material === material.name;
-      const toon = createToonMaterial(toonOptionsOf(material.name, spec, texture, profile.rim, sdf ? faceSdfUniforms : undefined));
-      toon.visible = !spec.hidden;
-      if (spec.stencil) applyStencil(toon, spec.stencil);
-      material.dispose();
-      return toon;
+      const next = pbr ? pbrSurface(material, spec) : toonSurface(material, spec);
+      if (!next) return material;
+      if (spec) { next.visible = !spec.hidden; if (spec.stencil) applyStencil(next, spec.stencil); }
+      if (next !== material) material.dispose();
+      return next;
     };
     mesh.material = Array.isArray(mesh.material) ? mesh.material.map(swap) : swap(mesh.material);
   });
@@ -767,7 +810,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
   // ---------- 구운 AO: 기본 T자 자세(팔 내림·애니메이션 전)에서 굽거나 캐시 파일을 씀. 끄면 아무것도 바꾸지 않음 ----------
   // 지금(팔 내림 전) 자세를 기억해 두어 실행 중에 AO를 켜도 같은 자세·같은 캐시 키로 구움. 설정은 매 프레임 읽어 새로고침 없이 켜고 끔
   const inRestPose = restPoseRunner(root);
-  const aoSettings = aoSettingsOf(profile.ao, tuning?.()), modelAo = hasModelAo(profile);   // 모델 AO 맵이 있으면 켜도 굽지 않음
+  const aoSettings = aoSettingsOf(profile.ao, tuning?.()), modelAo = hasModelAo(profile) || sourceAo;   // 모델 AO 맵이 있으면 켜도 굽지 않음
   const ao = createAoSwitch(() => prepareBakedAo(renderer, root, profile, new URL("../avatar-cache/ao", new URL(base, location.href)).href, json.model, aoSettings,
     aoStrengthOf(profile.ao, tuning?.()), Promise.all(textureLoads), inRestPose)
     .catch((error) => { log.warnOnce("ao-bake", "AO를 굽지 못했습니다:", error); return null; }));
@@ -852,17 +895,25 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
   for (const spec of profile.springs || []) for (const id of spec.roots) { const node = byName.get(id); if (node) springRoots.add(node); }
   const springBones = new Set<THREE.Object3D>();
   for (const node of springRoots) node.traverse((child) => { springBones.add(child); });
+  /** 애니메이션 파일의 첫 클립과 그 파일 장면 (.glb·.gltf는 GLTFLoader, 그 밖은 FBXLoader) */
+  const loadAnimationFile = async (file: string) => {
+    if (!/\.(glb|gltf)$/i.test(file)) { const source = await loader.loadAsync(base + file); return { source: source as THREE.Object3D, clip: source.animations[0] }; }
+    const loaded = await loadGltf(base + file, life);
+    return { source: loaded.model as THREE.Object3D, clip: loaded.animations[0] };
+  };
   /**
    * 클립 불러오기: 모델에 있는 뼈의 회전 트랙만 (흔들림 뼈·위치·모프 트랙은 뺌)
    * 다른 도구(UE 등)가 내보낸 클립은 좌표 변환이 기본 자세에 섞여 있어, 뼈마다 기본 자세 차이를 빼서 옮김:
    * 모델 회전 = 모델 기본 자세 × (클립 기본 자세)⁻¹ × 클립 회전
+   * glTF 모델에 든 클립(이름으로 지정)은 모델과 같은 기본 자세라 보정이 없음
    */
   const loadClip = async (file: string) => {
-    const source = await loader.loadAsync(base + file);
-    const clip = source.animations[0];
+    const embedded = gltf?.animations.find((each) => each.name === file);
+    const { source, clip } = embedded ? { source: null, clip: embedded.clone() } : await loadAnimationFile(file);
     if (!clip) return null;
     const clipBind = new Map<string, THREE.Quaternion>();
-    source.traverse((node) => { if (!clipBind.has(node.name)) clipBind.set(node.name, node.quaternion.clone()); });
+    if (source) source.traverse((node) => { if (!clipBind.has(node.name)) clipBind.set(node.name, node.quaternion.clone()); });
+    else for (const [name, quaternion] of bindLocal) clipBind.set(name, quaternion);
     const q = new THREE.Quaternion(), offset = new THREE.Quaternion();
     clip.tracks = clip.tracks.filter((track) => {
       const dot = track.name.lastIndexOf("."), name = track.name.slice(0, dot), node = byName.get(name);
@@ -1090,7 +1141,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
       root.updateMatrixWorld(true);   // 프레임당 장면 갱신 (scene.matrixWorldAutoUpdate = false)
       if (dt > 0) springs.step(dt);   // 흔들림 마디는 자기 월드 행렬을 직접 계산
       if (vrmRuntime) { vrmRuntime.update(dt); root.updateMatrixWorld(true); }   // VRM 표정(바인드한 모프를 덮어씀)·노드 제약·흔들림 뼈가 바꾼 노드 반영 (VRM은 복제 뼈가 없어 노드가 적음)
-      if (profile.faceSdf) updateFaceSdf();
+      if (faceSdf) updateFaceSdf();
       ao.sync(aoSettingsOf(profile.ao, tuning?.()).enabled && !modelAo);   // 설정에서 켜고 끄면 바로 반영 (처음 켤 때만 굽거나 캐시를 읽음)
       if (ao.uniforms) ao.uniforms.aoStrength.value = aoStrengthOf(profile.ao, tuning?.());
       if (taa) taa.render(scene, camera, time); else renderer.render(scene, camera);

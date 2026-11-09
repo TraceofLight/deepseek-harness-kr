@@ -731,6 +731,7 @@ test('Host asset route serves only its files and unregisters with the plugin', a
     await mkdir(join(root, 'assets'))
     await writeFile(join(root, 'assets', 'model.json'), '{"ok":true}')
     await writeFile(join(root, 'outside.json'), '{"secret":true}')
+    await writeFile(join(root, 'assets', 'scene.gltf'), '{}'); await writeFile(join(root, 'assets', 'scene.bin'), 'x'); await writeFile(join(root, 'assets', 'note.txt'), 'x')
     server = createServer(createAssetHandler(join(root, 'assets')))
     server.listen(0, '127.0.0.1'); await once(server, 'listening')
     const url = 'http://127.0.0.1:' + server.address().port
@@ -749,6 +750,10 @@ test('Host asset route serves only its files and unregisters with the plugin', a
     assert.equal((await fetch(url + ASSET_PATH + '/..%5coutside.json')).status, 404)
     assert.equal((await fetch(url + ASSET_PATH + '/model.json', { method: 'POST' })).status, 405)
     assert.equal((await fetch(url + ASSET_PATH + '/%zz')).status, 400)
+    // glTF 모델(.gltf와 바깥 버퍼 .bin)은 형식에 맞는 타입으로, 목록에 없는 확장자는 404
+    assert.equal((await fetch(url + ASSET_PATH + '/scene.gltf')).headers.get('content-type'), 'model/gltf+json')
+    assert.equal((await fetch(url + ASSET_PATH + '/scene.bin')).headers.get('content-type'), 'application/octet-stream')
+    assert.equal((await fetch(url + ASSET_PATH + '/note.txt')).status, 404)
     const registrations = new Map(), disposers = [], icons = []
     const applyIcon = async (options) => { icons.push(options.enabled); return {} }
     hostApply({ effect(fn) { disposers.push(fn()) }, webServer: { register(route) { registrations.set(route.path, route); return () => registrations.delete(route.path) } } }, undefined, { applyIcon })
