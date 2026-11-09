@@ -95,6 +95,10 @@ uniform sampler2D historyTexture;
 uniform vec2 resolution;
 uniform float feedback;
 uniform float reactiveFeedback;
+// 실사 셰이딩(Neutral 톤 매핑): 장면을 렌더 타깃에 그리면 three.js가 톤 매핑을 하지 않으므로 여기서 함 (toneMappingExposure 포함)
+#ifdef TAA_TONE_MAPPING
+  #include <tonemapping_pars_fragment>
+#endif
 
 // 선형 → sRGB 전달 함수 (three.js sRGBTransferOETF와 같은 식)
 vec3 srgbEncode( const in vec3 c ) {
@@ -103,7 +107,11 @@ vec3 srgbEncode( const in vec3 c ) {
 // premultiplied 선형 → premultiplied sRGB: 알파를 나눠 인코딩하고 다시 곱함 (지금의 직접 그리기와 같은 값, 투명 경계 후광 없음)
 vec4 toDisplay( const in vec4 c ) {
   if ( c.a <= 0.0 ) return vec4( 0.0 );
-  return vec4( srgbEncode( clamp( c.rgb / c.a, 0.0, 1.0 ) ) * c.a, c.a );
+  vec3 color = c.rgb / c.a;
+  #ifdef TAA_TONE_MAPPING
+    color = NeutralToneMapping( color );   // 직접 그리기의 tonemapping_fragment와 같은 자리 (알파를 나눈 뒤, 색 공간 변환 전)
+  #endif
+  return vec4( srgbEncode( clamp( color, 0.0, 1.0 ) ) * c.a, c.a );
 }
 vec4 toYCoCg( const in vec4 c ) {
   return vec4( dot( c.rgb, vec3( 0.25, 0.5, 0.25 ) ), dot( c.rgb, vec3( 0.5, 0.0, -0.5 ) ), dot( c.rgb, vec3( -0.25, 0.5, -0.25 ) ), c.a );
@@ -208,6 +216,19 @@ type Targets = ReturnType<typeof createTargets>;
 const allTargets = (targets: Targets) => [...targets.scene, ...targets.history];
 
 /**
+ * 해석 패스의 톤 매핑을 렌더러 설정에 맞춤: Neutral(실사 셰이딩)이면 TAA_TONE_MAPPING define과 노출, 아니면(툰) define 없음 = 예전 프로그램
+ * @param resolve 해석 패스 재질 (define이 바뀔 때만 다시 컴파일)
+ */
+export function syncToneMapping(resolve: THREE.ShaderMaterial, renderer: Pick<THREE.WebGLRenderer, "toneMapping" | "toneMappingExposure">) {
+  const want = renderer.toneMapping === THREE.NeutralToneMapping;
+  if (want !== ("TAA_TONE_MAPPING" in resolve.defines)) {
+    if (want) resolve.defines.TAA_TONE_MAPPING = ""; else delete resolve.defines.TAA_TONE_MAPPING;
+    resolve.needsUpdate = true;
+  }
+  resolve.uniforms.toneMappingExposure.value = renderer.toneMappingExposure;
+}
+
+/**
  * TAA 렌더러 만들기
  * @param renderer antialias: false로 만든 렌더러 (캔버스에는 해석 결과만 씀)
  * @param life 렌더 대상·재질 정리 등록
@@ -218,7 +239,7 @@ export function createTaa(renderer: THREE.WebGLRenderer, life: Pick<Lifetime, "a
   const velocity = createVelocityOutputs(life);
   const resolve = passMaterial(RESOLVE_FRAGMENT, {
     currentTexture: { value: null }, velocityTexture: { value: null }, prevVelocityTexture: { value: null }, depthTexture: { value: null },
-    historyTexture: { value: null }, velocityReject: { value: TAA_VELOCITY_REJECT }, resolution: { value: new THREE.Vector2() }, feedback: { value: TAA_FEEDBACK }, reactiveFeedback: { value: TAA_REACTIVE_FEEDBACK },
+    historyTexture: { value: null }, toneMappingExposure: { value: 1 }, velocityReject: { value: TAA_VELOCITY_REJECT }, resolution: { value: new THREE.Vector2() }, feedback: { value: TAA_FEEDBACK }, reactiveFeedback: { value: TAA_REACTIVE_FEEDBACK },
   });
   const copy = passMaterial(COPY_FRAGMENT, { sourceTexture: { value: null } });
   const quad = new FullScreenQuad();
@@ -247,6 +268,7 @@ export function createTaa(renderer: THREE.WebGLRenderer, life: Pick<Lifetime, "a
       uniforms.historyTexture.value = targets.history[read].texture;
       uniforms.feedback.value = reset ? 0 : TAA_FEEDBACK;
       uniforms.resolution.value.copy(size);
+      syncToneMapping(resolve, renderer);
       resolve.uniformsNeedUpdate = true;
       draw(resolve, targets.history[1 - read]);
       copy.uniforms.sourceTexture.value = targets.history[1 - read].texture;

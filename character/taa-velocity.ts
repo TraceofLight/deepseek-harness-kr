@@ -207,8 +207,11 @@ export function enableVelocity(material: THREE.Material, frame: FrameMatrices, s
     taaPrevBoneTexture: { value: null }, taaPrevMorphBase: { value: 1 }, taaPrevMorphInfluences: { value: new Float32Array(1) },
   };
   const defines = velocityDefines(material);
-  material.onBeforeCompile = (shader) => { Object.assign(shader.uniforms, uniforms); injectVelocity(shader, defines); };
-  material.customProgramCacheKey = () => "taa-velocity\n" + defines;
+  // 이미 셰이더를 고치는 재질(실사 재질의 구운 AO 등)은 그 고침을 먼저 하고 속도 출력을 더함
+  const ownHook = material.onBeforeCompile !== THREE.Material.prototype.onBeforeCompile ? material.onBeforeCompile.bind(material) : null;
+  const ownKey = ownHook ? material.customProgramCacheKey.bind(material) : null;
+  material.onBeforeCompile = (shader, renderer) => { ownHook?.(shader, renderer); Object.assign(shader.uniforms, uniforms); injectVelocity(shader, defines); };
+  material.customProgramCacheKey = () => (ownKey ? ownKey() + "\n" : "") + "taa-velocity\n" + defines;
   let boundFrame = -1, boundObject: THREE.Object3D | null = null;
   material.onBeforeRender = (_renderer, _scene, _camera, _geometry, object) => {
     const fresh = boundFrame !== state.frame;

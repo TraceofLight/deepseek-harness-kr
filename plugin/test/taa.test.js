@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import * as THREE from 'three'
-import { halton, jitterOf, jitterProjection, withJitter, shouldResetHistory, TAA_SAMPLES, TAA_RESET_GAP } from '../../character/taa.ts'
+import { halton, jitterOf, jitterProjection, withJitter, shouldResetHistory, syncToneMapping, TAA_SAMPLES, TAA_RESET_GAP } from '../../character/taa.ts'
 import { boneTextureSize, morphBaseInfluence, createPrevFrameState, velocityDefines, injectVelocity, enableVelocity } from '../../character/taa-velocity.ts'
 import { createOutlineMaterial, createToonMaterial } from '../../character/toon-material.ts'
 
@@ -172,4 +172,21 @@ test('속도 출력 켜기: uniform을 셰이더에 더하고, 같은 재질을 
   state.commit()
   draw(b)
   assert.equal(material.uniformsNeedUpdate, false)
+})
+
+test('TAA 해석의 톤 매핑은 렌더러가 Neutral(실사)일 때만 define·노출을 켜고, 바뀔 때만 다시 컴파일한다', () => {
+  const resolve = new THREE.ShaderMaterial({ uniforms: { toneMappingExposure: { value: 1 } } })
+  const renderer = { toneMapping: THREE.NoToneMapping, toneMappingExposure: 1 }
+  let version = resolve.version
+  syncToneMapping(resolve, renderer)
+  assert.ok(!('TAA_TONE_MAPPING' in resolve.defines)); assert.equal(resolve.version, version, '툰: 예전 프로그램 그대로')
+  Object.assign(renderer, { toneMapping: THREE.NeutralToneMapping, toneMappingExposure: 1.3 })
+  syncToneMapping(resolve, renderer)
+  assert.ok('TAA_TONE_MAPPING' in resolve.defines); assert.ok(resolve.version > version); assert.equal(resolve.uniforms.toneMappingExposure.value, 1.3)
+  version = resolve.version
+  syncToneMapping(resolve, renderer)
+  assert.equal(resolve.version, version, '같으면 다시 컴파일하지 않음')
+  renderer.toneMapping = THREE.NoToneMapping
+  syncToneMapping(resolve, renderer)
+  assert.ok(!('TAA_TONE_MAPPING' in resolve.defines))
 })
