@@ -25,7 +25,7 @@ https://github.com/user-attachments/assets/7e7a96cc-efc8-416d-89a0-f574fdcda690
 - 모바일(터치 전용) 화면에서도 캐릭터를 보여 주고, 좁은 화면에서는 입력창 위로 비켜 섭니다
 - 플러그인·자동화 화면에서는 창 안 캐릭터와 말풍선을 잠시 숨깁니다. 대화 화면으로 돌아오면 기존 표시 상태로 복구하며, 이미 창 밖으로 꺼낸 독립 펫은 그대로 유지합니다.
 - 캐릭터를 Harness 창 밖으로 꺼내 다른 앱 위에 띄우는 바깥 펫 창 — [바깥 펫 창](#바깥-펫-창)
-- (beta) Live2D 대신 내 FBX·VRM 3D 모델로 캐릭터 그리기. 바깥 펫 창도 같은 모델로 그립니다 — [3D 모델](#3d-모델-beta)
+- (beta) Live2D 대신 내 FBX·VRM·glTF 3D 모델로 캐릭터 그리기(툰·실사 셰이딩). 바깥 펫 창도 같은 모델로 그립니다 — [3D 모델](#3d-모델-beta)
 - (실험적) 대사 ex 파일로 상황별 대사 바꾸기 — [대사 ex](#대사-ex-실험적)
 - 파스텔 테마 (Harness의 밝은 모드·다크 모드 설정을 그대로 따름). 좁은 화면에서 겹쳐 뜨는 왼쪽 드로어·오른쪽 전체화면 패널은 내용이 비치지 않도록 불투명 배경으로 표시합니다
 - UI 번역 73개 네임스페이스를 제공하는 한국어 언어팩 (한국어·영어 화면 지원)
@@ -145,41 +145,58 @@ DSH Desktop 앱과 브라우저 Web UI에서 사용할 수 있습니다. 텍스�
 
 0.9.0부터 기본 Live2D 캐릭터 대신 직접 가진 3D 모델로 캐릭터를 그릴 수 있습니다([#27](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/27)). 같은 동작 코드가 모델을 움직이므로 작업 상태 반응·시선·말풍선 입 모양·바깥 펫 창은 그대로 이어집니다.
 
-- 지원 형식은 **FBX**와 **VRM(0.x·1.0)** 입니다. 다른 확장자는 지원 형식을 알려 주는 경고를 냅니다.
+- 지원 형식은 **FBX**, **VRM(0.x·1.0)**, **glTF(`.glb`·`.gltf`)** 입니다. 다른 확장자나 압축된 glTF(Draco·meshopt·KTX2)는 이유를 알려 주는 경고를 냅니다.
 - 모델 파일은 저장소·배포물에 들어 있지 않습니다. 설정에 지정한 로컬 폴더에서만 읽고, 폴더 밖 파일은 읽지 않습니다. 모델의 이용 약관은 직접 확인해 주세요.
 - 3D 모델에는 기본 반응만 적용되고, 냄비·세숫대야·삐짐 같은 DeepSeek짱 고유 행동은 `avatar.json`의 `behaviors`로 켜야 동작합니다 — [캐릭터 고유 행동](#캐릭터-고유-행동)
 - 모델 폴더를 비워 두면(기본값) 3D 렌더러를 불러오지 않으며, Live2D 캐릭터는 이전과 똑같이 동작합니다.
 
 ### 설정 방법
 
-1. 모델 폴더를 하나 만들고 모델 파일(`.vrm` 또는 `.fbx`)과 `avatar.json`을 넣습니다.
+1. 모델 폴더를 하나 만들고 모델 파일(`.vrm`·`.fbx`·`.glb`·`.gltf`)과 `avatar.json`을 넣습니다.
 2. 플러그인 설정의 **3D 모델 (실험)** 구역에서 **모델 폴더**에 그 폴더의 절대 경로를 넣고 화면을 새로 불러옵니다. 비우면 기본 Live2D 캐릭터로 돌아갑니다.
-3. 같은 구역에서 외곽선 법선, 눈썹 움직임 세기·부드러움, 앰비언트 오클루전(모델에 AO 맵이 없으면 자동으로 구워 캐시)과 세기를 조절할 수 있습니다.
+3. 같은 구역에서 외곽선 법선, 눈썹 움직임 세기·부드러움, 앰비언트 오클루전(모델에 AO 맵이 없으면 자동으로 구워 캐시, VRM MToon 재질은 지원하지 않음)과 세기를 조절할 수 있습니다.
 
-**VRM**은 사람형 뼈·표정·흔들림 뼈를 파일에서 읽으므로 한 줄이면 됩니다.
+**VRM**은 사람형 뼈·표정·흔들림 뼈를 파일에서 읽으므로 한 줄이면 됩니다. 재질은 three-vrm의 MToon을 그대로 써서 VRM 작가가 정한 대로 그립니다(실사 셰이딩을 요청해도 MToon 재질이면 툰으로 그림).
 
 ```json
 { "model": "MyAvatar.vrm" }
 ```
 
-**FBX**는 모델마다 뼈·모프 이름이 달라 대응표를 적어야 합니다. 주요 항목:
+**FBX**와 **glTF**는 모델마다 뼈·모프 이름이 달라 대응표를 적어야 합니다. 주요 항목:
 
 | 항목 | 내용 |
 |---|---|
 | `model` | 모델 파일 이름 |
+| `shading` | `"toon"`(자체 툰) 또는 `"pbr"`(실사: 물리 재질 + 내장 실내 환경광 + Neutral 톤 매핑). 기본은 glTF = pbr, FBX·VRM = toon |
+| `pbr` | 실사 설정: `environment`(환경광 세기)·`exposure`(노출)·`unlit`(조명 없는 glTF 재질을 그대로 `"keep"` 또는 조명 받게 `"lit"`) |
 | `bones` | 사람형 뼈(hips, spine, chest, neck, head, 팔·눈 등) → 모델 뼈 이름 |
 | `channels` | 동작 채널(눈 깜빡임, 입 모양, 눈썹 등) → 모프 이름·세기 |
 | `expressions` | 표정 이름 → 모프 세기 |
-| `materials` | 재질별 텍스처(바탕·그늘·AO 맵 등)·그리는 순서 |
+| `materials` | 재질별 텍스처(바탕·그늘·램프·그림자 맵·AO 맵)·그림자 문턱값·HighColor·스텐실·그리는 순서 — [툰 셰이딩](#툰-셰이딩) |
 | `springs` | 흔들림 뼈 시작점·강도·충돌체 |
-| `animations` | 대기·몸짓 애니메이션 클립 |
+| `animations` | 대기·몸짓 애니메이션 클립 (FBX·glTF 파일, 또는 glTF 모델에 든 클립 이름) |
 | `outline`, `light`, `rim`, `faceSdf` | 외곽선·조명·림·얼굴 그림자 |
 | `orientation` | 모델 방향(기본은 사람형 뼈로 자동 정규화) |
 | `render` | 안티에일리어싱(`"msaa"` 기본, `"taa"`)·렌더 배율 |
 | `behaviors` | 켤 DeepSeek짱 고유 행동 목록(기본은 없음) |
 | `gaze` | 시선 반응성 — [시선 반응성](#시선-반응성) |
 
-VRM에서도 위 항목을 적으면 기본값을 덮어씁니다(예: `gaze`, `channelSmooth`, `ao`). 더 자세한 예시와 스크린샷은 [PR #27](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/27)을 참고하세요.
+VRM에서도 위 항목을 적으면 기본값을 덮어씁니다(예: `gaze`, `channelSmooth`). 더 자세한 예시와 스크린샷은 [PR #27](https://github.com/noire113-dev/deepseek-chan-plugin-for-dsh-with-KR/pull/27)을 참고하세요.
+
+### 툰 셰이딩
+
+FBX·glTF의 툰 셰이딩은 자체 툰 셰이더(`character/toon-material.ts`)로 그립니다. `materials`의 재질마다 다음을 적을 수 있습니다.
+
+| 항목 | 내용 |
+|---|---|
+| `shadowThreshold`, `shadowSoftness` | half-Lambert(0~1) 기준 그림자 문턱값과 경계 반폭 (기본 0.525·0.025) |
+| `shade` | 그늘 맵 (없으면 바탕 × 기본 그늘 색) |
+| `ramp` | 램프 텍스처 `{ "map", "rows", "row" }`. 가로는 그늘(왼쪽) → 빛(오른쪽), 세로는 줄(0 = 맨 위). `row`를 `"lightMap"`으로 하면 그림자 맵 A 채널로 줄을 고름. 있으면 문턱값 대신 램프가 경계·그늘 색을 정함 |
+| `lightMap`, `lightMapStrength` | 그림자 맵(lightmap): R = HighColor 마스크, G = 문턱값 보정(0.5 = 그대로, 낮을수록 그늘), A = 램프 줄 |
+| `ao`, `aoScale` | AO 맵(R, 어두울수록 그늘 쪽)과 세기 |
+| `highColor` | UTS식 스페큘러 하이라이트 |
+
+`rim`은 빛을 받는 쪽 가장자리만 밝히는 프레넬 림입니다(`color`, `width`, `softness`, `lightMask`, `mix`). 예전 키(`shadingShift`·`shadingToony`, 림 `power`)도 같은 경계·굵기로 바꿔 읽습니다.
 
 ## 대사 ex (실험적)
 
@@ -244,7 +261,7 @@ node tools/check-lines.mjs
 ### Live2D 모델과 렌더러
 
 이 Live2D 모델 전용 값(파일 경로·파라미터·파츠·표정·치수)은 `character/model-profile.ts`에 모여 있습니다(소품·체형 파라미터는 `shared/settings.js`).
-동작 코드(`character/index.ts`)는 `character/rig.ts`의 `AvatarRig` 인터페이스로만 모델에 값을 씁니다(`set`·`add`·`multiply`, 표정, 터치 판정, 프레임 진행 등). Live2D 구현은 `character/rig-live2d.ts`, 3D 구현은 `character/rig-three.ts`(FBX)·`character/rig-vrm.ts`(VRM)이고, 3D는 Live2D 파라미터 이름을 의미 채널로 받아 `avatar.json` 대응표에 따라 뼈·모프에 적용합니다. 3D 렌더러 번들(`assets/vendor/rig-three.js`)은 3D 모델을 쓸 때만 불러옵니다. 셰이더는 MToon 대신 자체 툰 셰이더(`character/toon-material.ts`)를 씁니다.
+동작 코드(`character/index.ts`)는 `character/rig.ts`의 `AvatarRig` 인터페이스로만 모델에 값을 씁니다(`set`·`add`·`multiply`, 표정, 터치 판정, 프레임 진행 등). Live2D 구현은 `character/rig-live2d.ts`, 3D 구현은 `character/rig-three.ts`(FBX·공통)·`character/rig-vrm.ts`(VRM)·`character/rig-gltf.ts`(glTF)이고, 3D는 Live2D 파라미터 이름을 의미 채널로 받아 `avatar.json` 대응표에 따라 뼈·모프에 적용합니다. 3D 렌더러 번들(`assets/vendor/rig-three.js`)은 3D 모델을 쓸 때만 불러옵니다. 셰이더는 VRM이 three-vrm MToon, FBX·glTF가 자체 툰 셰이더(`character/toon-material.ts`, avatar.json 변환은 `character/toon-spec.ts`) 또는 실사 셰이딩(`character/pbr-material.ts`)입니다.
 
 ### 캐릭터 고유 행동
 
