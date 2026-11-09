@@ -172,6 +172,7 @@ DSH Desktop 앱과 브라우저 Web UI에서 사용할 수 있습니다. 텍스�
 | `bones` | 사람형 뼈(hips, spine, chest, neck, head, 팔·눈 등) → 모델 뼈 이름 |
 | `channels` | 동작 채널(눈 깜빡임, 입 모양, 눈썹 등) → 모프 이름·세기 |
 | `expressions` | 표정 이름 → 모프 세기 |
+| `bonePoses` | 모프 대신 얼굴 뼈로 표정을 짓는 모델용: 이름 → 뼈 이동(`move`, 또는 다른 뼈 쪽으로 `toward`)·회전(`rotate`). 이름은 `channels`·`expressions`에서 모프 이름처럼 씀 |
 | `materials` | 재질별 텍스처(바탕·그늘·램프·그림자 맵·AO 맵)·그림자 문턱값·HighColor·스텐실·그리는 순서 — [툰 셰이딩](#툰-셰이딩) |
 | `springs` | 흔들림 뼈 시작점·강도·충돌체 |
 | `animations` | 대기·몸짓 애니메이션 클립 (FBX·glTF 파일, 또는 glTF 모델에 든 클립 이름) |

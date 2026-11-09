@@ -12,6 +12,7 @@ import { loadGltf } from "./rig-gltf.ts";
 import { applyPbrSpec, convertsToStandard, isStandard, PBR_LIGHT, preparePbrMaterial, setupPbrScene, standardFrom, type Shading } from "./pbr-material.ts";
 import { OUTFIT_ITEMS } from "../shared/settings.js";
 import { createTaa } from "./taa.ts";
+import { createBonePoses, type BonePoseSpec } from "./bone-poses.ts";
 import { aoParamsHash, aoReceivers, aoSettingsOf, aoStrengthOf, applyBakedAo, bakeAo, disableSurfaceAo, enableSurfaceAo, loadAoCache, saveAoCache, type AoBakeParams, type AoOption } from "./ao-bake.ts";
 import { log } from "./log.ts";
 import { resolveGaze, type GazeOverrides } from "./gaze.ts";
@@ -67,6 +68,11 @@ export type AvatarProfile = {
   outfit?: Record<string, Array<{ morph: string; invert?: boolean }>>;
   /** 늘 걸어 두는 모프 (기본 옷차림 등) */
   baseMorphs?: Record<string, number>;
+  /**
+   * 뼈 포즈 (모프 대신 얼굴 뼈로 표정을 짓는 모델): 이름 → [{ bone, move: 화면 기준 이동(모델 키 비율), rotate: 화면 기준 축 회전(도) }]
+   * 이름은 channels·expressions·outfit에서 모프 이름처럼 씀 (예: 눈 깜빡임 = 위 눈꺼풀 뼈를 아래로)
+   */
+  bonePoses?: BonePoseSpec;
   /** 기본 자세: 위팔을 아래로 내리는 정도(도, 0이면 그대로) */
   armDown?: number;
   /** 지원하는 기능 (기본은 없음) */
@@ -855,6 +861,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
   // ---------- 크기·카메라 ----------
   const box = new THREE.Box3().setFromObject(root);
   const top = box.max.y, bottom = box.min.y, fullH = top - bottom;
+  const bonePoses = createBonePoses(profile.bonePoses, (name) => byName.get(name), fullH, (message) => log.warnOnce(`bone-pose:${message}`, message));
   const shoulders = (() => { const l = worldOf(bone("leftUpperArm")), r = worldOf(bone("rightUpperArm")); return l && r ? l.distanceTo(r) : fullH * 0.2; })();
   const bodyWidthWorld = shoulders * 2.1;
   const centerX = (worldOf(bone("head")) || hipsPos).x;
@@ -1064,6 +1071,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
       for (const binding of bindings) add(binding.morph, binding.invert ? 1 - on : on);
     }
     limitExclusiveMorphs(weights, profile.exclusiveMorphs);
+    bonePoses.apply(weights);   // 뼈 포즈 이름은 모프처럼 세기를 받아 얼굴 뼈를 움직임
     for (const slots of morphSlots.values()) for (const [mesh, index] of slots) mesh.morphTargetInfluences![index] = 0;
     for (const [morph, w] of weights) for (const [mesh, index] of morphSlots.get(morph) || []) mesh.morphTargetInfluences![index] = clamp(w, 0, 1);
     vrmRuntime?.setExpressions(sink.expressions);
@@ -1137,9 +1145,11 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
       values.clear(); expressionWeights.clear();
       frameFn?.();
       for (const [node, pose] of basePose) node.quaternion.copy(pose);   // 지난 프레임의 덧씌움을 걷어 내고 바탕 자세에서 시작
+      bonePoses.reset();
       endGesture(performance.now());
       mixer.update(dt);
       for (const [node, pose] of basePose) pose.copy(node.quaternion);   // 믹서가 바꾼 값(안 바꿨으면 그대로)을 바탕 자세로 기억
+      bonePoses.record();
       applyBones(dt);
       applyMorphs(dt);
       root.updateMatrixWorld(true);   // 프레임당 장면 갱신 (scene.matrixWorldAutoUpdate = false)
