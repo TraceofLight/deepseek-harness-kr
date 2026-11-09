@@ -1,5 +1,6 @@
 // 실사(PBR) 셰이딩: three.js 물리 기반 재질(MeshStandardMaterial)로 그림. avatar.json shading = "pbr"일 때 rig-three.ts가 씀.
-// glTF는 불러온 PBR 재질을 그대로 쓰고, FBX(Phong·Lambert)·VRM(MToon)·조명 없는(unlit) 재질은 바탕색·텍스처를 옮긴 물리 재질로 바꿈.
+// glTF는 불러온 PBR 재질을 그대로 쓰고, FBX(Phong·Lambert)와 조명 없는 재질(unlit, pbr.unlit = lit일 때)은 바탕색·텍스처를 옮긴 물리 재질로 바꿈.
+// 툰용 재질(VRM MToon)은 바꾸지 않음 (rig-three.ts가 모델 전체를 툰으로 그림).
 // 조명은 내장 실내 환경광(RoomEnvironment, IBL) + 방향광이고 출력은 Neutral 톤 매핑. 구운 AO는 onBeforeCompile로 간접광에 곱함.
 import * as THREE from "three";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
@@ -8,7 +9,7 @@ import type { MaterialSpec } from "./rig-three.ts";
 
 /** 셰이딩 방식: toon = 자체 툰 재질, pbr = 물리 기반 재질 + 실내 환경광 */
 export type Shading = "toon" | "pbr";
-/** 거칠기 정보가 없는 재질(unlit·MToon)을 물리 재질로 바꿀 때의 거칠기 */
+/** 거칠기 정보가 없는 재질(unlit)을 물리 재질로 바꿀 때의 거칠기 */
 export const DEFAULT_ROUGHNESS = 0.8;
 /** 실사 셰이딩 조명 기본값 (환경광이 간접광을 맡아 AmbientLight는 0, 흰 옷이 날아가지 않는 세기) */
 export const PBR_LIGHT = { intensity: 1, ambient: 0, environment: 0.8, exposure: 1 } as const;
@@ -20,7 +21,7 @@ export const PBR_LIGHT = { intensity: 1, ambient: 0, environment: 0.8, exposure:
 export const roughnessFromShininess = (shininess?: number) =>
   shininess === undefined ? DEFAULT_ROUGHNESS : Math.min(1, Math.max(0.04, Math.pow(2 / (shininess + 2), 0.25)));
 
-/** 바꿀 때 읽는 재질 값 (Phong·Lambert·Basic·MToon·Standard가 같은 이름으로 가짐) */
+/** 바꿀 때 읽는 재질 값 (Phong·Lambert·Basic이 같은 이름으로 가짐) */
 type SurfaceValues = THREE.Material & Partial<Pick<THREE.MeshPhongMaterial, "color" | "map" | "alphaMap" | "normalMap" | "normalScale"
   | "emissive" | "emissiveMap" | "emissiveIntensity" | "aoMap" | "aoMapIntensity" | "shininess">>;
 

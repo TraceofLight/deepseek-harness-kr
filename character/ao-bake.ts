@@ -4,7 +4,7 @@
 // 범위가 있는 오브스큐런스: 막는 면이 정점에서 그 방향으로 radius 안에 있을 때만(멀어질수록 약하게) 막힌 것으로 봄 → 몸 전체가 자기 몸에 어두워지지 않음.
 import * as THREE from "three";
 import { aoCacheMatches, decodeAoCache, encodeAoCache } from "../shared/ao-cache.js";
-import { disableBakedAo, enableBakedAo, mapOf, type BakedAoUniforms } from "./toon-material.ts";
+import { disableBakedAo, enableBakedAo, isToonMaterial, mapOf, type BakedAoUniforms } from "./toon-material.ts";
 import { disablePbrBakedAo, enablePbrBakedAo, isPbrAoSurface, isStandard } from "./pbr-material.ts";
 
 /** 굽기 방식 버전 (굽는 방법이 바뀌면 올려 예전 캐시를 버림, 굽기 설정 해시에 들어감) */
@@ -69,11 +69,9 @@ export function aoParamsHash(params: AoBakeParams, extra: unknown = null) {
 
 /** 재질 목록 (한 재질이면 배열로) */
 const materialsOf = (mesh: THREE.Mesh) => ([] as THREE.Material[]).concat(mesh.material);
-/** AO를 받는 표면 재질인지: 보이고, 불투명하고, 외곽선이 아닌 툰 재질 또는 준비한 물리 재질(실사 셰이딩, pbr-material.ts) */
-export const isAoSurface = (material: THREE.Material) => {
-  const shader = material as THREE.ShaderMaterial;
-  return (material.visible && !material.transparent && !!shader.uniforms?.shadingShift && !("OUTLINE" in (shader.defines || {}))) || isPbrAoSurface(material);
-};
+/** AO를 받는 표면 재질인지: 보이고, 불투명하고, 외곽선이 아닌 자체 툰 재질 또는 준비한 물리 재질(실사 셰이딩, pbr-material.ts). VRM MToon은 받지 않음 */
+export const isAoSurface = (material: THREE.Material) =>
+  (material.visible && !material.transparent && isToonMaterial(material) && !("OUTLINE" in ((material as THREE.ShaderMaterial).defines || {}))) || isPbrAoSurface(material);
 /** 표면 재질에 구운 AO 켜기 (툰 재질·물리 재질 각자의 방식) */
 export const enableSurfaceAo = (material: THREE.Material, uniforms: BakedAoUniforms, debug = false) =>
   isStandard(material) ? enablePbrBakedAo(material, uniforms, debug) : enableBakedAo(material as THREE.ShaderMaterial, uniforms, debug);

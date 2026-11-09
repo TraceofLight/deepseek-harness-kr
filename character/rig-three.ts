@@ -4,10 +4,11 @@
 // 이 파일은 따로 묶여(assets/vendor/rig-three.js) 3D 모델을 켰을 때만 불러옴 (window.DscRigThree).
 import * as THREE from "three";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
-import { createBakedAoUniforms, createFaceSdfUniforms, createOutlineMaterial, createToonMaterial, mapOf, updateUvTransforms, type FaceSdfUniforms, type ToonMaterialOptions } from "./toon-material.ts";
+import { createBakedAoUniforms, createFaceSdfUniforms, createOutlineMaterial, createToonMaterial, mapOf, updateUvTransforms } from "./toon-material.ts";
+import { toonOptionsFromSurface, toonOptionsOf } from "./toon-spec.ts";
 import { PARAMS } from "./model-profile.ts";
 import { addBindingWeight, addTargetWeight, loadVrm, type VrmRuntime, type WeightSink } from "./rig-vrm.ts";
-import { loadGltf, toonOptionsFromSurface } from "./rig-gltf.ts";
+import { loadGltf } from "./rig-gltf.ts";
 import { applyPbrSpec, convertsToStandard, isStandard, PBR_LIGHT, preparePbrMaterial, setupPbrScene, standardFrom, type Shading } from "./pbr-material.ts";
 import { OUTFIT_ITEMS } from "../shared/settings.js";
 import { createTaa } from "./taa.ts";
@@ -39,8 +40,14 @@ export type AvatarProfile = {
   pbr?: { environment?: number; exposure?: number; unlit?: "keep" | "lit" };
   /** 숨길 오브젝트 이름 (외곽선용 복제 메시 등) */
   hide?: string[];
-  /** 재질 이름 → 재질 설정 (텍스처는 폴더 기준 상대 경로). 실사 셰이딩은 map·ao(AO 맵)·투명 처리·양면·숨김·스텐실·순서만 씀 */
+  /**
+   * 재질 이름 → 재질 설정 (텍스처는 폴더 기준 상대 경로). 실사 셰이딩은 map·ao(AO 맵)·투명 처리·양면·숨김·스텐실·순서만 씀
+   * 툰 그림자: shade = 그늘 맵, shadowThreshold·shadowSoftness = half-Lambert 문턱값·경계 반폭, ramp = 램프 텍스처(map·rows·row 또는 "lightMap"),
+   * lightMap = 그림자 맵(R 반사 마스크·G 문턱값 보정·A 램프 줄)과 lightMapStrength, ao·aoScale = AO 맵(어두울수록 그늘)과 세기
+   * 예전 키 shadingShift·shadingToony(N·L 기준 경계)는 같은 경계가 되게 바꿔 씀 (toonShadowOptions)
+   */
   materials?: Record<string, { map?: string; shade?: string; ao?: string; aoScale?: number;
+    shadowThreshold?: number; shadowSoftness?: number; ramp?: { map: string; rows?: number; row?: number | "lightMap" }; lightMap?: string; lightMapStrength?: number;
     /** UTS HighColor(스페큘러 하이라이트): color = 색, power = 날카로움(0~1, UTS _HighColor_Power), mask = 마스크 맵, onShadow = 그림자 쪽 세기, strength = 전체 세기(장면 빛 세기 보정), toon = 경계가 딱 떨어지는 툰 모드(UTS 스페큘러 끔) */
     highColor?: { color: string; power?: number; mask?: string; onShadow?: number; strength?: number; toon?: boolean }; alphaTest?: number; transparent?: boolean; shadingShift?: number; shadingToony?: number; hidden?: boolean; doubleSided?: boolean;
     /**
@@ -84,8 +91,11 @@ export type AvatarProfile = {
   faceSdf?: { material: string; map: string; swap?: boolean; softness?: number };
   /** 조명: direction = 빛이 오는 방향(모델 기준, +x 화면 오른쪽·+y 위·+z 카메라 쪽), intensity·ambient = 세기 (기본 툰 2.2·0.9, 실사 1·0) */
   light?: { direction?: [number, number, number]; intensity?: number; ambient?: number };
-  /** 림 라이트: color = 색, power = 가장자리에 모이는 정도(클수록 얇음), mix = 조명 영향 */
-  rim?: { color: string; power?: number; mix?: number };
+  /**
+   * 림 라이트(프레넬): color = 색, width = 가장자리에서 들어오는 폭(0~1), softness = 경계 부드러움, lightMask = 빛을 받는 쪽만 남기는 정도(0~1, 기본 1),
+   * mix = 받은 빛을 따르는 정도. 예전 키 power(클수록 얇음)는 width가 없을 때 같은 굵기로 바꿔 씀
+   */
+  rim?: { color: string; width?: number; softness?: number; lightMask?: number; power?: number; mix?: number };
   /** 몸 애니메이션 (폴더 기준 FBX·glTF 파일, 또는 glTF 모델에 든 클립 이름): idle = 대기 반복 클립, gestures = 몸짓 이름(동작 코드의 play) → 클립 */
   animations?: { idle?: string; gestures?: Record<string, string> };
   /** 흔들림(스프링) 사슬: roots 아래 모든 뼈. stiffness = 제자리로 돌아오는 힘, drag = 감쇠(0~1), gravity = 아래로 끄는 힘 */
@@ -218,24 +228,6 @@ export function applyStencil(material: THREE.Material, stencil: { ref: number; w
 }
 /** avatar.json 재질 하나의 설정 */
 export type MaterialSpec = NonNullable<AvatarProfile["materials"]>[string];
-/**
- * avatar.json 재질 설정 → 툰 재질 설정 (MToon으로 그리던 때와 같은 값: 그늘 색 흰색 × 그늘 맵, 경계 -0.05·0.95 기본)
- * @param texture 폴더 기준 텍스처 (linear = 색 공간 변환 없이 읽는 수치 맵)
- * @param rim avatar.json 림 라이트 (없으면 림 없음)
- * @param faceSdf 이 재질이 얼굴 SDF 재질이면 공유 uniform
- */
-export function toonOptionsOf(name: string, spec: MaterialSpec, texture: (file?: string, linear?: boolean) => THREE.Texture | undefined,
-  rim?: AvatarProfile["rim"], faceSdf?: FaceSdfUniforms): ToonMaterialOptions {
-  return {
-    name, map: texture(spec.map), shadeColor: 0xffffff, shadeMap: texture(spec.shade),
-    // AO(lilToon의 그림자 경계 마스크): 어두운 텍셀일수록 그림자 경계를 밀어 늘 그늘지게 함
-    shadingShiftMap: texture(spec.ao, true), shadingShiftMapScale: spec.aoScale ?? 1,
-    shadingShift: spec.shadingShift ?? -0.05, shadingToony: spec.shadingToony ?? 0.95,
-    transparent: !!spec.transparent, alphaTest: spec.alphaTest ?? 0, side: spec.doubleSided ? THREE.DoubleSide : THREE.FrontSide,
-    rim: rim && { color: rim.color, fresnelPower: rim.power ?? 4, lightingMix: rim.mix ?? 0.5 },
-    faceSdf, highColor: spec.highColor && { ...spec.highColor, mask: texture(spec.highColor.mask, true) },
-  };
-}
 /**
  * 여러 재질 메시에서 순서(order)가 0이 아닌 재질을 같은 지오메트리·뼈·모프 배열을 쓰는 복제 메시로 떼어 renderOrder로 그림
  * (three.js는 한 메시 안 재질 순서를 정할 수 없어서)
@@ -554,6 +546,7 @@ export function restMorphs(meshes: THREE.Mesh[], weights: Record<string, number>
 async function prepareBakedAo(renderer: THREE.WebGLRenderer, root: THREE.Object3D, profile: AvatarProfile, cacheUrl: string, file: string,
   settings: { params: AoBakeParams; shade: number; debug: boolean }, strength: number, texturesReady: Promise<unknown>, inRestPose: <T>(fn: () => T) => T) {
   const meshes = aoReceivers(root);
+  if (!meshes.length) { log.warnOnce("ao-no-receiver", "이 모델 재질은 구운 AO를 받지 않습니다 (VRM MToon 등)"); return null; }
   const morphs = restMorphWeights(profile);
   const hash = aoParamsHash(settings.params, { hide: profile.hide ?? null, morphs, materials: profile.materials ?? null });
   const url = `${cacheUrl}?file=${encodeURIComponent(file)}&params=${hash}`;
@@ -641,9 +634,9 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
   if (json.outline && outlineNormals) json.outline.normals = outlineNormals;
   const textureLoader = new THREE.TextureLoader();
   const loader = new FBXLoader();
-  const format = modelFormat(json.model), shading = shadingOf(json, format), pbr = shading === "pbr";
-  // VRM: three-vrm으로 읽고 VRM 값으로 프로필을 합성(avatar.json은 덮어쓰기)·MToon을 툰 재질(실사 셰이딩이면 물리 재질)로 바꿈
-  const vrm = format === "vrm" ? await loadVrm(base + json.model, json, life, shading) : null;
+  const format = modelFormat(json.model), requested = shadingOf(json, format);
+  // VRM: three-vrm으로 읽고 VRM 값으로 프로필을 합성(avatar.json은 덮어쓰기). 재질은 three-vrm MToonMaterial 그대로
+  const vrm = format === "vrm" ? await loadVrm(base + json.model, json, life) : null;
   // glTF: 재질은 아래에서 셰이딩에 맞춰 바꾸고, 내장 클립은 avatar.json animations에 이름으로 씀
   const gltf = format === "gltf" ? await loadGltf(base + json.model, life) : null;
   const profile = vrm ? vrm.profile : json;
@@ -651,6 +644,9 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
   const model = vrm ? vrm.model : gltf ? gltf.model : await loader.loadAsync(base + profile.model);
   if (life.stopped) return null;
   if (format === "fbx") dedupeFbxBones(model);
+  // MToon은 툰용 재질이라 물리 재질로 바꾸지 않음: 실사를 요청해도 모델 전체를 툰으로 (조명·톤 매핑이 섞이지 않게)
+  if (requested === "pbr" && vrm?.mtoon) log.warnOnce("vrm-mtoon-pbr", "MToon 재질을 쓰는 VRM은 실사 셰이딩 대신 툰으로 그립니다 (avatar.json shading)");
+  const pbr = requested === "pbr" && !vrm?.mtoon;
   /** VRM 사람형 뼈 노드 (FBX·avatar.json으로 이름을 준 뼈는 없음 → 이름으로 찾음) */
   const vrmNode = (name: HumanBone) => vrmRuntime?.nodes.get(name);
   // 방향 보정 그룹: 파일 좌표계와 상관없이 위 +y·정면 +z·이름상 왼쪽 +x 로 (아래 코드는 이 화면 기준을 가정)
@@ -756,7 +752,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
      * @param vertexWidth true면 정점 속성 outlineWidth를 두께에 곱함 (모델 제공 외곽선의 정점 색 R)
      */
     const outlineMaterial = (source: THREE.Material, vertexWidth = false) => {
-      // 표면 설정은 바탕 맵·알파 테스트만 따르고 나머지는 기본값 (MToon 외곽선 재질로 그리던 때와 같은 색)
+      // 표면 설정은 바탕 맵·알파 테스트만 따르고 나머지는 기본값
       const material = createOutlineMaterial({
         width: profile.outline!.width * height, outlineColor: profile.outline!.color || "#2b2430", lightingMix: 0.3,
         map: mapOf(source), alphaTest: source.alphaTest, widthAttribute: vertexWidth,

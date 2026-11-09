@@ -1,10 +1,8 @@
-// VRM(0.x·1.0) 모델 불러오기. @pixiv/three-vrm(MIT, © pixiv)은 사람형 뼈·표정·흔들림 뼈·노드 제약·메타를 읽고 돌리는 데만 쓰고,
-// MToon 재질은 three-vrm이 읽은 값을 자체 툰 재질(toon-material.ts)로 옮겨 그리고, 실사 셰이딩이면 물리 재질(pbr-material.ts)로 옮김. rig-three.ts가 모델 파일이 .vrm일 때 부름.
+// VRM(0.x·1.0) 모델 불러오기. @pixiv/three-vrm(MIT, © pixiv)이 사람형 뼈·표정·흔들림 뼈·노드 제약·메타를 읽고 돌리며,
+// 재질은 three-vrm의 MToonMaterial을 그대로 씀 (VRM 명세대로, 자체 툰 재질과 다른 경로). rig-three.ts가 모델 파일이 .vrm일 때 부름.
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { VRMLoaderPlugin, VRMUtils, type MToonMaterial, type VRM } from "@pixiv/three-vrm";
-import { createOutlineMaterial, createToonMaterial, updateUvTransforms, type OutlineMaterialOptions, type ToonMaterialOptions } from "./toon-material.ts";
-import { standardFrom, type Shading } from "./pbr-material.ts";
+import { VRMLoaderPlugin, VRMUtils, type VRM } from "@pixiv/three-vrm";
 import type { AvatarProfile, HumanBone, MorphBinding } from "./rig-three.ts";
 import type { Lifetime } from "./lifetime.ts";
 
@@ -99,112 +97,6 @@ export const addBindingWeight = (sink: WeightSink, binding: MorphBinding, w: num
 /** 표정 표의 대상 이름에 세기 더하기: VRM 표정 이름이면 VRM 표정, 아니면 모프 */
 export const addTargetWeight = (sink: WeightSink, name: string, w: number) => addWeight(sink.vrmNames.has(name) ? sink.expressions : sink.morphs, name, w);
 
-/** MToon 재질에서 읽는 값 (테스트는 가짜 객체) */
-export type MToonValues = Pick<MToonMaterial, "name" | "color" | "opacity" | "map" | "normalMap" | "normalScale" | "emissive" | "emissiveIntensity" | "emissiveMap"
-  | "shadeColorFactor" | "shadeMultiplyTexture" | "shadingShiftFactor" | "shadingShiftTexture" | "shadingShiftTextureScale" | "shadingToonyFactor" | "giEqualizationFactor"
-  | "matcapFactor" | "matcapTexture" | "rimMultiplyTexture" | "parametricRimColorFactor" | "parametricRimFresnelPowerFactor" | "parametricRimLiftFactor" | "rimLightingMixFactor"
-  | "outlineWidthMode" | "outlineWidthFactor" | "outlineWidthMultiplyTexture" | "outlineColorFactor" | "outlineLightingMixFactor"
-  | "uvAnimationScrollXOffset" | "uvAnimationScrollYOffset" | "uvAnimationRotationPhase" | "alphaTest" | "transparent" | "side">;
-
-/**
- * MToon 값 → 툰 재질 설정 (옵션 이름이 MToon 값과 1:1. UV 애니메이션은 지금 위치만, 텍스처 변환은 매 프레임 갱신)
- * UV 애니메이션 마스크·v0 호환 그늘은 옮기지 않음 (v0 호환 그늘은 three-vrm 기본값도 꺼짐)
- */
-export function toonOptionsFromMToon(source: MToonValues): ToonMaterialOptions {
-  return {
-    name: source.name, color: source.color, map: source.map, opacity: source.opacity,
-    shadeColor: source.shadeColorFactor, shadeMap: source.shadeMultiplyTexture,
-    shadingShift: source.shadingShiftFactor, shadingToony: source.shadingToonyFactor,
-    shadingShiftMap: source.shadingShiftTexture, shadingShiftMapScale: source.shadingShiftTextureScale,
-    giEqualization: source.giEqualizationFactor,
-    rim: { color: source.parametricRimColorFactor, fresnelPower: source.parametricRimFresnelPowerFactor, lift: source.parametricRimLiftFactor, lightingMix: source.rimLightingMixFactor,
-      map: source.rimMultiplyTexture },
-    normalMap: source.normalMap, normalScale: source.normalScale,
-    emissive: source.emissive, emissiveIntensity: source.emissiveIntensity, emissiveMap: source.emissiveMap,
-    matcap: source.matcapTexture ? { color: source.matcapFactor, map: source.matcapTexture } : undefined,
-    uvOffset: [source.uvAnimationScrollXOffset, source.uvAnimationScrollYOffset], uvRotation: source.uvAnimationRotationPhase,
-    alphaTest: source.alphaTest, transparent: source.transparent, side: source.side, uvTransforms: true,
-  };
-}
-
-/**
- * MToon 외곽선 값 → 툰 외곽선 재질 설정 (두께 = outlineWidthFactor 월드 단위, 두께 맵 G 채널)
- * 화면 좌표 두께(screenCoordinates)도 같은 값을 월드 두께로 넘기므로, 그 모드는 convertMToon이 숨김
- */
-export const outlineOptionsFromMToon = (source: MToonValues): OutlineMaterialOptions => ({
-  ...toonOptionsFromMToon(source), width: source.outlineWidthFactor, outlineColor: source.outlineColorFactor,
-  lightingMix: source.outlineLightingMixFactor, widthMap: source.outlineWidthMultiplyTexture,
-});
-
-/** 툰 재질 uniform ← MToon 색 속성. 같은 Color 객체를 써서 VRM 표정의 재질 색 바인드가 툰 재질에도 걸림 */
-const SHARED_COLORS = [
-  ["diffuse", "color"], ["shadeColor", "shadeColorFactor"], ["rimColor", "parametricRimColorFactor"],
-  ["emissive", "emissive"], ["matcapColor", "matcapFactor"], ["outlineColor", "outlineColorFactor"],
-] as const;
-
-/**
- * MToon 재질 하나를 툰 재질로 바꿈 (외곽선 재질이면 툰 외곽선). 원래 재질은 GPU 자원만 정리하고 표정 바인드용 값 보관소로 남김
- * @returns 툰 재질 (화면 좌표 두께 외곽선은 숨긴 재질)
- */
-export function convertMToon(source: MToonMaterial) {
-  const material = source.isOutline ? createOutlineMaterial(outlineOptionsFromMToon(source)) : createToonMaterial(toonOptionsFromMToon(source));
-  material.visible = source.visible && (!source.isOutline || source.outlineWidthMode === "worldCoordinates");
-  material.depthWrite = source.depthWrite;
-  for (const [ours, theirs] of SHARED_COLORS) if (material.uniforms[ours]) material.uniforms[ours].value = source[theirs];
-  source.dispose();
-  return material;
-}
-
-/**
- * 장면의 모든 MToon 재질을 툰 재질로 바꿈 (MToon이 아닌 재질은 그대로)
- * @returns [툰 재질, 원래 MToon] 목록 (매 프레임 불투명도·텍스처 변환을 옮겨 옴)
- */
-export function convertMToonMaterials(scene: THREE.Object3D) {
-  const pairs: Array<[THREE.ShaderMaterial, MToonMaterial]> = [];
-  const swap = (material: THREE.Material) => {
-    if (!(material as MToonMaterial).isMToonMaterial) return material;
-    const toon = convertMToon(material as MToonMaterial);
-    pairs.push([toon, material as MToonMaterial]);
-    return toon;
-  };
-  scene.traverse((node) => {
-    const mesh = node as THREE.Mesh;
-    if (mesh.isMesh) mesh.material = Array.isArray(mesh.material) ? mesh.material.map(swap) : swap(mesh.material);
-  });
-  return pairs;
-}
-
-/**
- * MToon 재질 하나를 물리 재질로 바꿈 (실사 셰이딩). 바탕색·발광 색은 같은 Color 객체를 써서 VRM 표정의 재질 색 바인드가 그대로 걸림
- * MToon 외곽선 재질은 숨김 (실사 셰이딩은 외곽선 기본 꺼짐, avatar.json outline으로만 켬)
- */
-export function convertMToonToStandard(source: MToonMaterial) {
-  const material = standardFrom(source);
-  material.color = source.color; material.emissive = source.emissive;
-  material.visible = source.visible && !source.isOutline;
-  source.dispose();
-  return material;
-}
-
-/**
- * 장면의 모든 MToon 재질을 물리 재질로 바꿈 (실사 셰이딩, MToon이 아닌 재질은 그대로)
- * @returns [물리 재질, 원래 MToon] 목록 (매 프레임 불투명도를 옮겨 옴. 텍스처 변환은 three.js 기본 재질이 텍스처에서 바로 읽음)
- */
-export function convertMToonMaterialsToStandard(scene: THREE.Object3D) {
-  const pairs: Array<[THREE.MeshStandardMaterial, MToonMaterial]> = [];
-  const swap = (material: THREE.Material) => {
-    if (!(material as MToonMaterial).isMToonMaterial) return material;
-    const standard = convertMToonToStandard(material as MToonMaterial);
-    pairs.push([standard, material as MToonMaterial]);
-    return standard;
-  };
-  scene.traverse((node) => {
-    const mesh = node as THREE.Mesh;
-    if (mesh.isMesh) mesh.material = Array.isArray(mesh.material) ? mesh.material.map(swap) : swap(mesh.material);
-  });
-  return pairs;
-}
-
 /** VRM에서 프로필 합성용 값 뽑기 */
 function vrmInfoOf(vrm: VRM): VrmInfo {
   const bones: Partial<Record<HumanBone, string>> = {};
@@ -236,16 +128,15 @@ export type VrmRuntime = {
   rested(): void;
   /** 이번 프레임 VRM 표정 세기 (없는 표정은 0) */
   setExpressions(weights: Map<string, number>): void;
-  /** 뼈·모프를 적용하고 월드 행렬을 갱신한 뒤: 재질 동기화 → 표정 → 노드 제약 → 흔들림 뼈 */
+  /** 뼈·모프를 적용하고 월드 행렬을 갱신한 뒤: MToon 재질(UV 애니메이션 등) → 표정 → 노드 제약 → 흔들림 뼈 (three-vrm VRM.update와 같은 일, 사람형 뼈 갱신만 뺌) */
   update(dt: number): void;
 };
 
 /**
  * VRM 런타임 만들기 (사람형 뼈는 raw 뼈를 직접 움직이므로 humanoid.update는 부르지 않음)
  * @param springs VRM 흔들림 뼈를 쓸지 (avatar.json springs가 없을 때)
- * @param syncMaterials 바꾼 재질에 MToon 값(표정 바인드가 바꾼 불투명도·텍스처 변환)을 옮기는 함수
  */
-function createVrmRuntime(vrm: VRM, nodes: Map<HumanBone, THREE.Object3D>, springs: boolean, syncMaterials: () => void): VrmRuntime {
+function createVrmRuntime(vrm: VRM, nodes: Map<HumanBone, THREE.Object3D>, springs: boolean): VrmRuntime {
   const expressionNames = new Set((vrm.expressionManager?.expressions || []).map((expression) => expression.expressionName));
   const springBones = springs ? vrm.springBoneManager : undefined;
   return {
@@ -255,7 +146,7 @@ function createVrmRuntime(vrm: VRM, nodes: Map<HumanBone, THREE.Object3D>, sprin
       for (const name of expressionNames) vrm.expressionManager!.setValue(name, Math.min(1, Math.max(0, weights.get(name) || 0)));
     },
     update(dt) {
-      syncMaterials();
+      for (const material of vrm.materials ?? []) (material as THREE.Material & { update?: (delta: number) => void }).update?.(dt);
       vrm.expressionManager?.update();
       vrm.nodeConstraintManager?.update();
       springBones?.update(dt);
@@ -264,13 +155,12 @@ function createVrmRuntime(vrm: VRM, nodes: Map<HumanBone, THREE.Object3D>, sprin
 }
 
 /**
- * VRM 불러오기: three-vrm으로 읽고, 프로필 합성·재질 변환·런타임 준비
+ * VRM 불러오기: three-vrm으로 읽고 프로필 합성·런타임 준비 (재질은 three-vrm이 만든 그대로)
  * @param url 모델 파일 주소
  * @param overrides avatar.json
- * @param shading 셰이딩 (toon = MToon을 툰 재질로, pbr = 물리 재질로)
- * @returns 모델 장면(아직 방향 보정 전), 합성 프로필, 런타임
+ * @returns 모델 장면(아직 방향 보정 전), 합성 프로필, 런타임, MToon 재질이 있는지 (있으면 실사 셰이딩 대신 툰으로 그림)
  */
-export async function loadVrm(url: string, overrides: VrmOverrides, life: Lifetime, shading: Shading = "toon") {
+export async function loadVrm(url: string, overrides: VrmOverrides, life: Lifetime) {
   const loader = new GLTFLoader();
   loader.register((parser) => new VRMLoaderPlugin(parser, { autoUpdateHumanBones: false }));
   const gltf = await loader.loadAsync(url);
@@ -279,14 +169,7 @@ export async function loadVrm(url: string, overrides: VrmOverrides, life: Lifeti
   vrm.humanoid.normalizedHumanBonesRoot.removeFromParent();   // 정규화 뼈는 안 써서 장면에서 뺌
   life.add(() => VRMUtils.deepDispose(vrm.scene));   // 텍스처까지 정리
   const profile = profileFromVrm(vrmInfoOf(vrm), overrides);
-  let syncMaterials: () => void;
-  if (shading === "pbr") {
-    const pairs = convertMToonMaterialsToStandard(vrm.scene);
-    syncMaterials = () => { for (const [standard, source] of pairs) standard.opacity = source.opacity; };
-  } else {
-    const pairs = convertMToonMaterials(vrm.scene);
-    syncMaterials = () => { for (const [toon, source] of pairs) { toon.uniforms.opacity.value = source.opacity; updateUvTransforms(toon.uniforms); } };
-  }
-  const runtime = createVrmRuntime(vrm, humanNodes(vrm, overrides), !overrides.springs, syncMaterials);
-  return { model: vrm.scene, profile, runtime };
+  const runtime = createVrmRuntime(vrm, humanNodes(vrm, overrides), !overrides.springs);
+  const mtoon = (vrm.materials ?? []).some((material) => (material as THREE.Material & { isMToonMaterial?: boolean }).isMToonMaterial);
+  return { model: vrm.scene, profile, runtime, mtoon };
 }

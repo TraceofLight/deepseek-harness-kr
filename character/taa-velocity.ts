@@ -73,9 +73,6 @@ const VERTEX_MAIN = /* glsl */ `
     #ifdef OUTLINE_WIDTH_ATTRIBUTE
       taaWidth *= outlineWidth;
     #endif
-    #ifdef OUTLINE_WIDTH_MAP
-      taaWidth *= texture2D( outlineWidthMap, TOON_UV( outlineWidthMapUvTransform, vUv ) ).g;
-    #endif
     taaPrevious += taaWidth * taaPrevUnit;
   #endif
   vTaaClip = taaViewProjection * modelMatrix * vec4( taaCurrent, 1.0 );

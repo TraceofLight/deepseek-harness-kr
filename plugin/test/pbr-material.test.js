@@ -7,7 +7,6 @@ import {
 import { aoReceivers, disableSurfaceAo, enableSurfaceAo, isAoSurface } from '../../character/ao-bake.ts'
 import { createBakedAoUniforms, createToonMaterial } from '../../character/toon-material.ts'
 import { createPrevFrameState, enableVelocity } from '../../character/taa-velocity.ts'
-import { convertMToonToStandard } from '../../character/rig-vrm.ts'
 
 test('Phong 반짝임은 거칠기 (2/(n+2))^¼로 바뀌고, 값이 없으면 기본 거칠기다', () => {
   assert.equal(roughnessFromShininess(undefined), DEFAULT_ROUGHNESS)
@@ -93,22 +92,6 @@ test('TAA 속도 출력은 재질에 걸린 구운 AO 끼워 넣기를 먼저 �
   const toon = createToonMaterial({})
   enableVelocity(toon, frame, createPrevFrameState())
   assert.match(toon.customProgramCacheKey(), /^taa-velocity\n/, '끼워 넣기가 없던 재질은 예전과 같은 키')
-})
-
-test('VRM 실사 셰이딩: MToon은 같은 색 객체를 쓰는 물리 재질이 되고, MToon 외곽선은 숨긴다', () => {
-  let disposed = 0
-  const mtoon = (isOutline) => Object.assign(new THREE.Material(), {
-    name: 'Face', color: new THREE.Color(0.9, 0.8, 0.7), emissive: new THREE.Color(0, 0, 0), map: new THREE.Texture(), isOutline, isMToonMaterial: true,
-    dispose() { disposed++ },
-  })
-  const source = mtoon(false), standard = convertMToonToStandard(source)
-  assert.ok(standard.isMeshStandardMaterial)
-  assert.equal(standard.color, source.color, '표정의 재질 색 바인드가 그대로 걸림')
-  assert.equal(standard.emissive, source.emissive)
-  assert.equal(standard.map, source.map)
-  assert.equal(standard.visible, true)
-  assert.equal(convertMToonToStandard(mtoon(true)).visible, false)
-  assert.equal(disposed, 2)
 })
 
 test('실사 셰이딩은 Phong·Lambert를 늘, unlit은 pbr.unlit = lit일 때만 물리 재질로 바꾸고 나머지는 그대로 둔다', () => {

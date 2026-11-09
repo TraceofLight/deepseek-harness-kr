@@ -68,8 +68,8 @@ test('AO 기능은 기본 재질에 define·uniform이 없고, 켜면 표면 재
   assert.equal(b.uniforms.aoShade, uniforms.aoShade)
   assert.deepEqual(Object.keys(outline.defines), ['OUTLINE'], '외곽선은 AO 없음')
   assert.ok(!('aoStrength' in outline.uniforms))
-  // 셰이더: AO를 끈 분기는 예전 간접광 줄을 그대로 둠
-  assert.match(a.fragmentShader, /#else\s+reflectedLight\.indirectDiffuse \+= gi \* BRDF_Lambert\( material\.diffuseColor \);/)
+  // 셰이더: AO는 define 안에서만 간접광을 줄임 (끄면 간접광 계산이 그대로)
+  assert.match(a.fragmentShader, /#ifdef TOON_BAKED_AO\s+indirect \*= bakedAoAmount\(\);\s+#endif\s+reflectedLight\.indirectDiffuse \+= indirect;/)
 })
 
 /** 시험용 메시 (정점 n개, 툰 재질) */
