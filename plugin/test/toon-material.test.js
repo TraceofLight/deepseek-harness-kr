@@ -29,6 +29,8 @@ test('기능 define은 켠 기능만 들어가고, 램프 줄을 그림자 맵�
   assert.deepEqual(Object.keys(toonDefines({ ramp: { map, row: 'lightMap' } })), ['TOON_RAMP'], '그림자 맵이 없으면 고정 줄')
   assert.deepEqual(Object.keys(toonDefines({ ramp: { map, row: 'lightMap' }, lightMap: map })).sort(), ['TOON_LIGHT_MAP', 'TOON_RAMP', 'TOON_RAMP_ROW_LIGHT_MAP'])
   assert.deepEqual(Object.keys(toonDefines({ rim: { color: '#fff' } })), ['TOON_RIM'])
+  const screen = { uniforms: { rimDepth: { value: null }, rimResolution: { value: new THREE.Vector2() }, rimDepthThreshold: { value: 0 } }, offset: 0.01 }
+  assert.deepEqual(Object.keys(toonDefines({ rim: { color: '#fff', screen } })).sort(), ['TOON_RIM', 'TOON_RIM_SCREEN'])
   assert.ok('TOON_FACE_SDF' in toonDefines({ faceSdf: createFaceSdfUniforms(map) }))
   assert.deepEqual(Object.keys(toonDefines({ highColor: { color: '#fff', mask: map } })).sort(), ['TOON_HIGHCOLOR', 'TOON_HIGHCOLOR_MASK'])
   assert.deepEqual(Object.keys(toonDefines({}, {})), ['OUTLINE'])
@@ -109,4 +111,16 @@ test('알파 테스트는 재질 값과 uniform이 같고, 외곽선은 뒷면·
   // three.js 기본 재질(모델 원래 재질)의 map도 읽는다
   assert.equal(mapOf(new THREE.MeshPhongMaterial({ map })), map)
   assert.equal(mapOf(new THREE.MeshPhongMaterial()), null)
+})
+
+test('화면 공간 림은 TAA 깊이·버퍼 크기·깊이 문턱값 uniform을 재질끼리 같은 객체로 쓰고, 옆을 읽을 거리는 재질마다 갖는다', () => {
+  const depth = new THREE.Texture()
+  const uniforms = { rimDepth: { value: depth }, rimResolution: { value: new THREE.Vector2(900, 900) }, rimDepthThreshold: { value: 0.0002 } }
+  const a = createToonMaterial({ rim: { color: '#fff', screen: { uniforms, offset: 0.01 } } }), b = createToonMaterial({ rim: { color: '#fff', screen: { uniforms, offset: 0.02 } } })
+  assert.equal(a.uniforms.rimDepth, uniforms.rimDepth); assert.equal(b.uniforms.rimDepth, uniforms.rimDepth)
+  assert.equal(a.uniforms.rimResolution, b.uniforms.rimResolution); assert.equal(a.uniforms.rimDepthThreshold, b.uniforms.rimDepthThreshold)
+  assert.equal(a.uniforms.rimOffset.value, 0.01); assert.equal(b.uniforms.rimOffset.value, 0.02)
+  uniforms.rimDepthThreshold.value = 0.0005
+  assert.equal(b.uniforms.rimDepthThreshold.value, 0.0005, '카메라를 정한 뒤 문턱값을 채우면 모든 재질에 반영')
+  assert.ok(!('rimDepth' in createToonMaterial({ rim: { color: '#fff' } }).uniforms), '프레넬 림은 깊이를 읽지 않음')
 })

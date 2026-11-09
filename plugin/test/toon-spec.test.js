@@ -57,7 +57,7 @@ test('림: width가 없으면 예전 power 곡선이 절반이 되는 곳을 폭
 test('FBX avatar.json 재질: 그늘 맵이 있으면 그늘 색 흰색, 없으면 바탕 × 기본 그늘 색', () => {
   const loaded = []
   const options = toonOptionsOf('Hair_M', { map: 'c.png', shade: 's.png', ao: 'ao.png', aoScale: 1.8, shadingShift: -1.85, doubleSided: true,
-    highColor: { color: '#d4e9ff', power: 1, mask: 'm.png' } }, named(loaded), { color: '#3a3550', power: 5, mix: 0.6 })
+    highColor: { color: '#d4e9ff', power: 1, mask: 'm.png' } }, named(loaded), toonRimOptions({ color: '#3a3550', power: 5, mix: 0.6 }))
   assert.deepEqual(loaded.sort(), [['ao.png', true], ['c.png', false], ['m.png', true], ['s.png', false]])
   assert.equal(options.name, 'Hair_M')
   assert.equal(options.shadeColor, 0xffffff)
@@ -101,4 +101,13 @@ test('glTF 물리 재질의 노멀 맵·발광·AO 맵·텍스처 변환도 옮�
   assert.equal(tuned.occlusionMap, files.get('ao.png'), 'avatar.json AO 맵이 glTF AO 맵보다 먼저'); assert.equal(tuned.occlusionStrength, 0.5)
   assert.equal(tuned.shadowThreshold, 0.6); assert.equal(tuned.shadowSoftness, 0.2)
   assert.equal(tuned.side, THREE.DoubleSide); assert.equal(tuned.alphaTest, 0.5)
+})
+
+test('림: TAA 깊이가 있으면 화면 공간 림이 기본이고, mode = fresnel이거나 깊이가 없으면 프레넬 림이다', () => {
+  const screen = { uniforms: { rimDepth: { value: null }, rimResolution: { value: new THREE.Vector2(1, 1) }, rimDepthThreshold: { value: 0.001 } }, offset: 0.01 }
+  assert.equal(toonRimOptions({ color: '#fff' }, screen).screen, screen)
+  assert.equal(toonRimOptions({ color: '#fff', mode: 'screen' }, screen).screen, screen)
+  assert.equal(toonRimOptions({ color: '#fff', mode: 'fresnel' }, screen).screen, undefined)
+  assert.equal(toonRimOptions({ color: '#fff' }).screen, undefined, 'TAA가 아니면 프레넬')
+  assert.equal(toonRimOptions(undefined, screen), undefined)
 })

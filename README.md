@@ -177,7 +177,7 @@ DSH Desktop 앱과 브라우저 Web UI에서 사용할 수 있습니다. 텍스�
 | `animations` | 대기·몸짓 애니메이션 클립 (FBX·glTF 파일, 또는 glTF 모델에 든 클립 이름) |
 | `outline`, `light`, `rim`, `faceSdf` | 외곽선·조명·림·얼굴 그림자 |
 | `orientation` | 모델 방향(기본은 사람형 뼈로 자동 정규화) |
-| `render` | 안티에일리어싱(`"msaa"` 기본, `"taa"`)·렌더 배율 |
+| `render` | 안티에일리어싱(`"taa"` 기본, `"msaa"`)·렌더 배율 |
 | `behaviors` | 켤 DeepSeek짱 고유 행동 목록(기본은 없음) |
 | `gaze` | 시선 반응성 — [시선 반응성](#시선-반응성) |
 
@@ -196,7 +196,7 @@ FBX·glTF의 툰 셰이딩은 자체 툰 셰이더(`character/toon-material.ts`)
 | `ao`, `aoScale` | AO 맵(R, 어두울수록 그늘 쪽)과 세기 |
 | `highColor` | UTS식 스페큘러 하이라이트 |
 
-`rim`은 빛을 받는 쪽 가장자리만 밝히는 프레넬 림입니다(`color`, `width`, `softness`, `lightMask`, `mix`). 예전 키(`shadingShift`·`shadingToony`, 림 `power`)도 같은 경계·굵기로 바꿔 읽습니다.
+`rim`은 빛을 받는 쪽 가장자리만 밝히는 림입니다(`color`, `lightMask`, `mix`). TAA(기본)에서는 화면 공간 림으로 TAA가 이미 그리는 깊이를 읽어 실루엣·앞뒤로 겹친 경계를 밝히고(`screenWidth` = 캔버스 px, 추가 패스 없음), MSAA이거나 `"mode": "fresnel"`이면 프레넬 림(`width`, `softness`)입니다. 예전 키(`shadingShift`·`shadingToony`, 림 `power`)도 같은 경계·굵기로 바꿔 읽습니다.
 
 ## 대사 ex (실험적)
 

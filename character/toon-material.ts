@@ -10,11 +10,15 @@ export type FaceSdfUniforms = {
 };
 /** UTS HighColor(스페큘러 하이라이트): power = 날카로움(0~1), mask = 마스크 맵(G), onShadow = 그림자 쪽 세기, strength = 전체 세기, toon = 경계가 딱 떨어지는 툰 모드 */
 export type HighColorOptions = { color: THREE.ColorRepresentation; power?: number; mask?: THREE.Texture | null; onShadow?: number; strength?: number; toon?: boolean };
+/** 화면 공간 림 공유 uniform: rimDepth = 지난 프레임 장면 깊이(TAA), rimResolution = 깊이 버퍼 크기(px), rimDepthThreshold = 가장자리로 볼 깊이 차이(정규화 깊이) */
+export type ScreenRimUniforms = { rimDepth: THREE.IUniform<THREE.Texture | null>; rimResolution: THREE.IUniform<THREE.Vector2>; rimDepthThreshold: THREE.IUniform<number> };
 /**
- * 림 라이트 (프레넬): width = 가장자리에서 안쪽으로 들어오는 폭(0~1), softness = 경계 부드러움, lightMask = 빛을 받는 쪽만 남기는 정도(0~1),
- * lightingMix = 받은 빛 세기를 따르는 정도(0 = 늘 같은 밝기)
+ * 림 라이트: 프레넬(width = 가장자리에서 안쪽으로 들어오는 폭 0~1, softness = 경계 부드러움) 또는
+ * 화면 공간(screen: 화면 법선 방향으로 offset(캔버스 높이 대비)만큼 옆의 장면 깊이가 충분히 멀면 가장자리, TAA 깊이를 씀)
+ * lightMask = 빛을 받는 쪽만 남기는 정도(0~1), lightingMix = 받은 빛 세기를 따르는 정도(0 = 늘 같은 밝기)
  */
-export type RimOptions = { color: THREE.ColorRepresentation; width?: number; softness?: number; lightMask?: number; lightingMix?: number };
+export type RimOptions = { color: THREE.ColorRepresentation; width?: number; softness?: number; lightMask?: number; lightingMix?: number;
+  screen?: { uniforms: ScreenRimUniforms; offset: number } };
 /** 램프: map = 가로(왼쪽 그늘 → 오른쪽 빛)·세로(줄, 0 = 맨 위) 텍스처, rows = 줄 수, row = 쓸 줄 또는 "lightMap"(그림자 맵 A 채널로 텍셀마다 고름) */
 export type RampOptions = { map: THREE.Texture; rows?: number; row?: number | "lightMap" };
 /** 툰 재질 설정 */
@@ -75,10 +79,11 @@ export function highColorUniforms(spec: HighColorOptions) {
   };
 }
 
-/** 림 설정 → uniform (기본: 폭 0.2·부드러움 0.1·빛 방향으로 가림·받은 빛을 따름) */
+/** 림 설정 → uniform (기본: 폭 0.2·부드러움 0.1·빛 방향으로 가림·받은 빛을 따름). 화면 공간 림은 깊이 uniform을 재질끼리 같이 씀 */
 const rimUniforms = (rim: RimOptions) => ({
   rimColor: { value: new THREE.Color(rim.color) }, rimWidth: { value: rim.width ?? 0.2 }, rimSoftness: { value: rim.softness ?? 0.1 },
   rimLightMask: { value: rim.lightMask ?? 1 }, rimLightingMix: { value: rim.lightingMix ?? 1 },
+  ...rim.screen && { ...rim.screen.uniforms, rimOffset: { value: rim.screen.offset } },
 });
 
 /** 램프 텍스처 준비: 줄끼리 섞이지 않게 가장자리 고정·밉맵 없음 (같은 텍스처를 다시 넣어도 됨) */
@@ -147,7 +152,7 @@ export function toonDefines(options: ToonMaterialOptions, outline?: Pick<Outline
   const flags: Record<string, boolean> = {
     TOON_MAP: !!options.map, TOON_SHADE_MAP: !!options.shadeMap, TOON_RAMP: !!options.ramp,
     TOON_RAMP_ROW_LIGHT_MAP: !!options.ramp && options.ramp.row === "lightMap" && !!options.lightMap,
-    TOON_LIGHT_MAP: !!options.lightMap, TOON_OCCLUSION_MAP: !!options.occlusionMap, TOON_RIM: !!options.rim,
+    TOON_LIGHT_MAP: !!options.lightMap, TOON_OCCLUSION_MAP: !!options.occlusionMap, TOON_RIM: !!options.rim, TOON_RIM_SCREEN: !!options.rim?.screen,
     TOON_FACE_SDF: !!options.faceSdf, TOON_HIGHCOLOR: !!options.highColor, TOON_HIGHCOLOR_MASK: !!options.highColor?.mask,
     TOON_NORMAL_MAP: !!options.normalMap, TOON_EMISSIVE: options.emissive !== undefined, TOON_EMISSIVE_MAP: options.emissive !== undefined && !!options.emissiveMap,
     TOON_UV_TRANSFORM: !!options.uvTransforms,
@@ -240,6 +245,12 @@ uniform float shadowSoftness;
   uniform float rimSoftness;
   uniform float rimLightMask;
   uniform float rimLightingMix;
+  #ifdef TOON_RIM_SCREEN
+    uniform sampler2D rimDepth;
+    uniform vec2 rimResolution;
+    uniform float rimDepthThreshold;
+    uniform float rimOffset;
+  #endif
 #endif
 #ifdef TOON_FACE_SDF
   uniform sampler2D faceSdfMap;
@@ -461,9 +472,20 @@ void main() {
   vec3 col = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse;
 
   #ifdef TOON_RIM
-    // 프레넬 림: 시선과 비껴갈수록 가장자리부터 폭만큼, 빛을 향한 쪽만 남기고(lightMask) 받은 빛만큼 밝힘(lightingMix)
-    float fresnel = 1.0 - saturate( dot( normalize( vViewPosition ), normal ) );
-    float rimAmount = smoothstep( 1.0 - rimWidth - rimSoftness, 1.0 - rimWidth + rimSoftness, fresnel );
+    #ifdef TOON_RIM_SCREEN
+      // 화면 공간 림: 화면 법선 방향으로 rimOffset만큼 옆의 장면 깊이(지난 프레임)가 이 면보다 충분히 멀면 가장자리 (실루엣·앞뒤로 겹친 경계)
+      vec2 rimDir = normal.xy;
+      float rimDirLength = length( rimDir );
+      rimDir = rimDirLength > 1e-4 ? rimDir / rimDirLength : vec2( 0.0 );
+      vec2 rimUv = gl_FragCoord.xy / rimResolution + rimDir * rimOffset * vec2( rimResolution.y / rimResolution.x, 1.0 );
+      float rimDepthGap = texture2D( rimDepth, rimUv ).r - gl_FragCoord.z;
+      float rimAmount = smoothstep( rimDepthThreshold, 2.0 * rimDepthThreshold, rimDepthGap );
+    #else
+      // 프레넬 림: 시선과 비껴갈수록 가장자리부터 폭만큼
+      float fresnel = 1.0 - saturate( dot( normalize( vViewPosition ), normal ) );
+      float rimAmount = smoothstep( 1.0 - rimWidth - rimSoftness, 1.0 - rimWidth + rimSoftness, fresnel );
+    #endif
+    // 빛을 향한 쪽만 남기고(lightMask) 받은 빛만큼 밝힘(lightingMix)
     rimAmount *= mix( 1.0, smoothstep( 0.5, 1.0, toonTowardLight ), rimLightMask );
     col += rimColor * rimAmount * mix( vec3( 1.0 ), toonLightSum * RECIPROCAL_PI, rimLightingMix );
   #endif

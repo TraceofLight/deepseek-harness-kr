@@ -5,7 +5,7 @@
 import * as THREE from "three";
 import { FBXLoader } from "three/examples/jsm/loaders/FBXLoader.js";
 import { createBakedAoUniforms, createFaceSdfUniforms, createOutlineMaterial, createToonMaterial, mapOf, updateUvTransforms } from "./toon-material.ts";
-import { toonOptionsFromSurface, toonOptionsOf } from "./toon-spec.ts";
+import { toonOptionsFromSurface, toonOptionsOf, toonRimOptions } from "./toon-spec.ts";
 import { PARAMS } from "./model-profile.ts";
 import { addBindingWeight, addTargetWeight, loadVrm, type VrmRuntime, type WeightSink } from "./rig-vrm.ts";
 import { loadGltf } from "./rig-gltf.ts";
@@ -92,10 +92,11 @@ export type AvatarProfile = {
   /** 조명: direction = 빛이 오는 방향(모델 기준, +x 화면 오른쪽·+y 위·+z 카메라 쪽), intensity·ambient = 세기 (기본 툰 2.2·0.9, 실사 1·0) */
   light?: { direction?: [number, number, number]; intensity?: number; ambient?: number };
   /**
-   * 림 라이트(프레넬): color = 색, width = 가장자리에서 들어오는 폭(0~1), softness = 경계 부드러움, lightMask = 빛을 받는 쪽만 남기는 정도(0~1, 기본 1),
-   * mix = 받은 빛을 따르는 정도. 예전 키 power(클수록 얇음)는 width가 없을 때 같은 굵기로 바꿔 씀
+   * 림 라이트: color = 색, lightMask = 빛을 받는 쪽만 남기는 정도(0~1, 기본 1), mix = 받은 빛을 따르는 정도
+   * mode = screen(TAA일 때 기본: 화면 법선 방향으로 screenWidth(캔버스 px, 기본 2.5)만큼 옆의 깊이가 멀면 가장자리) 또는 fresnel(TAA가 아니면 늘 이것)
+   * 프레넬: width = 가장자리에서 들어오는 폭(0~1), softness = 경계 부드러움. 예전 키 power(클수록 얇음)는 width가 없을 때 같은 굵기로 바꿔 씀
    */
-  rim?: { color: string; width?: number; softness?: number; lightMask?: number; power?: number; mix?: number };
+  rim?: { color: string; mode?: "screen" | "fresnel"; screenWidth?: number; width?: number; softness?: number; lightMask?: number; power?: number; mix?: number };
   /** 몸 애니메이션 (폴더 기준 FBX·glTF 파일, 또는 glTF 모델에 든 클립 이름): idle = 대기 반복 클립, gestures = 몸짓 이름(동작 코드의 play) → 클립 */
   animations?: { idle?: string; gestures?: Record<string, string> };
   /** 흔들림(스프링) 사슬: roots 아래 모든 뼈. stiffness = 제자리로 돌아오는 힘, drag = 감쇠(0~1), gravity = 아래로 끄는 힘 */
@@ -110,7 +111,7 @@ export type AvatarProfile = {
    */
   orientation?: { auto?: boolean; mirror?: boolean; yaw?: number };
   /**
-   * 렌더링 (실험): antialias = msaa(기본, MSAA + 1.5배 렌더 배율) 또는 taa(MSAA 끔 + 화면 배율 그대로 + 시간 누적 안티앨리어싱, taa.ts)
+   * 렌더링: antialias = taa(기본, MSAA 끔 + 화면 배율 그대로 + 시간 누적 안티앨리어싱, taa.ts. 화면 공간 림이 그 깊이를 씀) 또는 msaa(MSAA + 1.5배 렌더 배율)
    * scale = 렌더 배율에 더 곱할 값 (기본 1)
    */
   render?: { antialias?: "msaa" | "taa"; scale?: number };
@@ -216,6 +217,8 @@ function outlineGeometry(source: THREE.BufferGeometry, tolerance: number) {
   return geometry;
 }
 
+/** 화면 공간 림: 옆 깊이가 모델 키의 이만큼 뒤면 가장자리 (작으면 앞뒤로 조금만 겹친 곳도 밝힘) */
+const SCREEN_RIM_DEPTH = 0.03;
 /** 외곽선 메시 그리는 순서 (스텐실로 비친 부분을 덮지 않게 모든 재질 뒤) */
 const OUTLINE_ORDER = 100;
 const STENCIL_FUNCS = { equal: THREE.EqualStencilFunc, notEqual: THREE.NotEqualStencilFunc } as const;
@@ -658,7 +661,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
   applyOrientation(root, hipsAt && headAt && leftArmAt && rightArmAt
     ? { hips: hipsAt, head: headAt, leftUpperArm: leftArmAt, rightUpperArm: rightArmAt, leftEye: pointOf("leftEye"), rightEye: pointOf("rightEye") } : null, profile.orientation);
 
-  const taaMode = profile.render?.antialias === "taa", renderScale = profile.render?.scale ?? 1;
+  const taaMode = profile.render?.antialias !== "msaa", renderScale = profile.render?.scale ?? 1;   // 기본 TAA
   const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: !taaMode, premultipliedAlpha: true, stencil: true });   // 스텐실(눈썹이 앞머리 위로 비침)에 필요, three.js 기본은 꺼짐
   renderer.setClearColor(0x000000, 0);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -680,6 +683,9 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
     renderer.dispose();
   });
   const taa = taaMode ? createTaa(renderer, life) : null;   // TAA는 MSAA 대신 지터·히스토리로 경계를 고름
+  // 화면 공간 림: TAA의 지난 프레임 깊이를 읽음 (깊이 문턱값은 카메라를 정한 뒤 채움). TAA가 아니면 프레넬 림
+  const screenRim = taa && profile.rim ? { uniforms: { rimDepth: taa.depth.texture, rimResolution: taa.depth.resolution, rimDepthThreshold: { value: 0 } }, offset: (profile.rim.screenWidth ?? 2.5) / H } : undefined;
+  const rim = toonRimOptions(profile.rim, screenRim);
 
   // ---------- 재질: 셰이딩에 맞는 재질로 바꾸고 숨길 것은 숨김 ----------
   const textures = new Map<string, THREE.Texture>();
@@ -708,9 +714,9 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
   /** 툰 셰이딩: glTF 재질은 모두, 그 밖(FBX·VRM)은 avatar.json에 설정이 있는 재질만 툰 재질로 (없으면 null = 그대로) */
   const toonSurface = (material: THREE.Material, spec: MaterialSpec | undefined) => {
     const sdf = faceSdf?.material === material.name ? faceSdfUniforms : undefined;
-    if (!gltf) return spec ? createToonMaterial(toonOptionsOf(material.name, spec, texture, profile.rim, sdf)) : null;
+    if (!gltf) return spec ? createToonMaterial(toonOptionsOf(material.name, spec, texture, rim, sdf)) : null;
     sourceAo ||= !!(material as THREE.MeshStandardMaterial).aoMap;
-    const options = toonOptionsFromSurface(material, spec, texture, profile.rim, sdf);
+    const options = toonOptionsFromSurface(material, spec, texture, rim, sdf);
     const toon = createToonMaterial(options);
     if (options.uvTransforms) updateUvTransforms(toon.uniforms);
     toon.visible = material.visible;
@@ -857,6 +863,8 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
   const fullScale = Math.min((W * 0.98) / bodyWidthWorld, (H * 0.95) / fullH);
   const scale = pet ? fullScale : bustScale;   // 캔버스 px / 월드 단위
   const camera = new THREE.OrthographicCamera(-W / 2 / scale, W / 2 / scale, H / 2 / scale, -H / 2 / scale, -100 * fullH, 100 * fullH);
+  // 화면 공간 림 깊이 문턱값: 모델 키의 SCREEN_RIM_DEPTH만큼 뒤에 있으면 가장자리 (직교 카메라라 깊이는 거리에 비례)
+  if (screenRim) screenRim.uniforms.rimDepthThreshold.value = SCREEN_RIM_DEPTH * fullH / (camera.far - camera.near);
   // 모델 위 끝이 캔버스 y = H×0.05, 가로 가운데가 캔버스 가운데에 오게
   const camTop = top + (H * 0.05) / scale;
   camera.position.set(centerX, camTop - H / 2 / scale, 10 * fullH);
@@ -1119,7 +1127,7 @@ export async function createThreeRig({ base, life, canvas, W, H, pet, outlineNor
     chibiRegion(y) { return y < toCanvas(worldOf(bone("neck")) || headPos).y ? "head" : "body"; },
     setResolution(k) {
       const ratio = (devicePixelRatio || 1) * (taa ? 1 : 1.5) * Math.max(1, k) * renderScale;   // TAA는 화면 배율 그대로 (지터 누적이 초과 표본 역할)
-      if (renderer.getPixelRatio() === ratio && canvas.width > 0) return;
+      if (renderer.getPixelRatio() === ratio && canvas.width === Math.floor(W * ratio) && canvas.height === Math.floor(H * ratio)) return;   // 배율 1이어도 처음 한 번은 크기를 맞춤 (캔버스 기본 300×150)
       renderer.setPixelRatio(ratio);
       renderer.setSize(W, H, false);
     },

@@ -215,6 +215,9 @@ type Targets = ReturnType<typeof createTargets>;
 /** 모든 렌더 대상 목록 */
 const allTargets = (targets: Targets) => [...targets.scene, ...targets.history];
 
+/** 지난 프레임 장면 깊이 (화면 공간 림용): texture = 깊이 텍스처(0 가까움 ~ 1 멂), resolution = 버퍼 크기(px) */
+export type TaaDepth = { texture: THREE.IUniform<THREE.Texture | null>; resolution: THREE.IUniform<THREE.Vector2> };
+
 /**
  * 해석 패스의 톤 매핑을 렌더러 설정에 맞춤: Neutral(실사 셰이딩)이면 TAA_TONE_MAPPING define과 노출, 아니면(툰) define 없음 = 예전 프로그램
  * @param resolve 해석 패스 재질 (define이 바뀔 때만 다시 컴파일)
@@ -232,7 +235,8 @@ export function syncToneMapping(resolve: THREE.ShaderMaterial, renderer: Pick<TH
  * TAA 렌더러 만들기
  * @param renderer antialias: false로 만든 렌더러 (캔버스에는 해석 결과만 씀)
  * @param life 렌더 대상·재질 정리 등록
- * @returns render(장면, 카메라, 시각 ms): renderer.render 대신 매 프레임 부름
+ * @returns render(장면, 카메라, 시각 ms): renderer.render 대신 매 프레임 부름,
+ *   depth: 지난 프레임 장면 깊이 텍스처·버퍼 크기 uniform (화면 공간 림이 읽음, 장면을 그리기 전에 갱신)
  */
 export function createTaa(renderer: THREE.WebGLRenderer, life: Pick<Lifetime, "add">) {
   const targets = createTargets();
@@ -245,6 +249,7 @@ export function createTaa(renderer: THREE.WebGLRenderer, life: Pick<Lifetime, "a
   const quad = new FullScreenQuad();
   life.add(() => { for (const target of allTargets(targets)) { target.dispose(); target.depthTexture?.dispose(); } resolve.dispose(); copy.dispose(); quad.dispose(); });
   const size = new THREE.Vector2();
+  const depth: TaaDepth = { texture: { value: null }, resolution: { value: new THREE.Vector2(1, 1) } };
   let last: TaaFrame | null = null, frame = 0, read = 0, prepared = false;
   /** 전체 화면 패스 하나 그리기 */
   const draw = (material: THREE.ShaderMaterial, target: THREE.WebGLRenderTarget | null) => { quad.material = material; renderer.setRenderTarget(target); quad.render(renderer); };
@@ -258,6 +263,8 @@ export function createTaa(renderer: THREE.WebGLRenderer, life: Pick<Lifetime, "a
       if (!prepared) { velocity.prepare(scene); prepared = true; }
       // read = 지난 프레임 것(히스토리·장면 속도), 1 - read = 이번 프레임에 쓰는 것
       const current = targets.scene[1 - read], uniforms = resolve.uniforms;
+      depth.texture.value = targets.scene[read].depthTexture;   // 지난 프레임 깊이 (지금 쓰는 대상은 읽을 수 없음)
+      depth.resolution.value.copy(size);
       velocity.begin(camera);
       withJitter(camera, jitterOf(frame), size.x, size.y, () => { renderer.setRenderTarget(current); renderer.render(scene, camera); });
       velocity.commit();
@@ -275,5 +282,6 @@ export function createTaa(renderer: THREE.WebGLRenderer, life: Pick<Lifetime, "a
       draw(copy, null);
       read = 1 - read;
     },
+    depth,
   };
 }
