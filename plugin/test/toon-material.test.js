@@ -123,4 +123,5 @@ test('화면 공간 림은 TAA 깊이·버퍼 크기·깊이 문턱값 uniform�
   uniforms.rimDepthThreshold.value = 0.0005
   assert.equal(b.uniforms.rimDepthThreshold.value, 0.0005, '카메라를 정한 뒤 문턱값을 채우면 모든 재질에 반영')
   assert.ok(!('rimDepth' in createToonMaterial({ rim: { color: '#fff' } }).uniforms), '프레넬 림은 깊이를 읽지 않음')
+  assert.match(a.fragmentShader, /rimSelfGap/, '지난 프레임 이 자리 깊이가 지금과 다르면(깊이 없음·크기 변경 직후) 림을 끔')
 })

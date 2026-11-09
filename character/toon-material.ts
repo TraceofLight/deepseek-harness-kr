@@ -479,7 +479,9 @@ void main() {
       rimDir = rimDirLength > 1e-4 ? rimDir / rimDirLength : vec2( 0.0 );
       vec2 rimUv = gl_FragCoord.xy / rimResolution + rimDir * rimOffset * vec2( rimResolution.y / rimResolution.x, 1.0 );
       float rimDepthGap = texture2D( rimDepth, rimUv ).r - gl_FragCoord.z;
-      float rimAmount = smoothstep( rimDepthThreshold, 2.0 * rimDepthThreshold, rimDepthGap );
+      // 지난 프레임 이 자리 깊이가 지금과 크게 다르면(깊이가 없거나 깨졌거나 크게 움직임) 림을 끔: 온몸에 켜지지 않게
+      float rimSelfGap = abs( texture2D( rimDepth, gl_FragCoord.xy / rimResolution ).r - gl_FragCoord.z );
+      float rimAmount = smoothstep( rimDepthThreshold, 2.0 * rimDepthThreshold, rimDepthGap ) * ( 1.0 - smoothstep( rimDepthThreshold, 2.0 * rimDepthThreshold, rimSelfGap ) );
     #else
       // 프레넬 림: 시선과 비껴갈수록 가장자리부터 폭만큼
       float fresnel = 1.0 - saturate( dot( normalize( vViewPosition ), normal ) );

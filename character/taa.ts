@@ -257,13 +257,16 @@ export function createTaa(renderer: THREE.WebGLRenderer, life: Pick<Lifetime, "a
     render(scene: THREE.Scene, camera: THREE.Camera, time: number) {
       renderer.getDrawingBufferSize(size);
       const next = { width: size.x, height: size.y, time }, reset = shouldResetHistory(last, next);
-      if (!last || last.width !== next.width || last.height !== next.height) for (const target of allTargets(targets)) target.setSize(size.x, size.y);
+      const resized = !last || last.width !== next.width || last.height !== next.height;
+      if (resized) for (const target of allTargets(targets)) target.setSize(size.x, size.y);
       last = next;
       frame = reset ? 0 : frame + 1;
       if (!prepared) { velocity.prepare(scene); prepared = true; }
       // read = 지난 프레임 것(히스토리·장면 속도), 1 - read = 이번 프레임에 쓰는 것
       const current = targets.scene[1 - read], uniforms = resolve.uniforms;
-      depth.texture.value = targets.scene[read].depthTexture;   // 지난 프레임 깊이 (지금 쓰는 대상은 읽을 수 없음)
+      // 지난 프레임 깊이 (지금 쓰는 대상은 읽을 수 없음). 크기를 바꾼 프레임엔 지난 대상이 새로 할당돼 아직 그린 적이 없으므로 내주지 않음
+      // (그 텍스처를 읽으면 브라우저에 따라 그리기가 실패하거나 깊이가 모두 멀게 읽혀 화면 공간 림이 온몸에 켜짐)
+      depth.texture.value = resized ? null : targets.scene[read].depthTexture;
       depth.resolution.value.copy(size);
       velocity.begin(camera);
       withJitter(camera, jitterOf(frame), size.x, size.y, () => { renderer.setRenderTarget(current); renderer.render(scene, camera); });
