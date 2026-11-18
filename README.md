@@ -294,7 +294,7 @@ node tools/check-lines.mjs
 ## 만든 사람
 
 - [@noire113-dev](https://github.com/noire113-dev) — 기획, 테스트, 배경 그림
-- [Claude](https://claude.ai) (Anthropic, Claude Code) — 한국어화·인앱 캐릭터 코드, 패치·빌드 도구, 소개 영상 제작, PR 검증·릴리즈. 0.10.0의 한국어 혼잣말(로컬 LLM)과 인증 쿠키 3일만 유지, 0.10.1의 어깨 꾹 눌러 옮기기와 이동 단축키 설정도 Claude(Claude Opus 5.5)가 작성
+- [Claude](https://claude.ai) (Anthropic, Claude Code) — 한국어화·인앱 캐릭터 코드, 패치·빌드 도구, 소개 영상 제작, PR 검증·릴리즈
 - [Codex](https://openai.com/codex) (OpenAI) — 이슈·PR 작업 계획, 코드 검수, 문서 정리
 - [DeepSeek](https://www.deepseek.com) (DeepSeek V4.1 Flash 1017) — 버그 수정, PR 통합·기능 구현, 자동 테스트
 - Gemma 4 26B A4B heretic — 대사 ex 작성
