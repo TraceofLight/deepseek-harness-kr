@@ -106,8 +106,10 @@ export const Config = z.object({
   idleSleepMinutes: z.number().min(0.5).max(60).default(1).volatile(),
   // 캐릭터 토글 단축키 (비워 두면 단축키 없음). 예: "Ctrl+Shift+D", "Alt+C"
   characterToggleKey: z.string().default('Ctrl+Shift+D').volatile(),
-  // 캐릭터를 집어 옮길 때 누르고 있어야 하는 키 하나 (수식 키 또는 일반 키). 비우면 예전처럼 왼쪽·오른쪽 버튼을 함께 눌러야 한다.
-  dragKey: z.string().default('Alt').volatile(),
+  // 캐릭터를 집어 옮길 때 누르고 있어야 하는 키 하나 (수식 키 또는 일반 키). 기본은 없음 (어깨 꾹 누르기·왼쪽·오른쪽 버튼 함께)
+  dragKey: z.string().default('').volatile(),
+  // 어깨를 1초 꾹 누른 뒤 끌어 옮기기 (트랙패드용, 기본 켜짐)
+  shoulderGrab: z.boolean().default(true).volatile(),
   // 바깥 펫 창으로 내보내기·돌아오기 단축키 (비워 두면 단축키 없음). 예: "Ctrl+Shift+P"
   petToggleKey: z.string().default('Ctrl+Shift+P').volatile(),
   // 캔버스만 숨김/표시: 캐릭터를 내리지 않고 그리기만 멈춰 즉시 전환한다. 성능 부담이 있어 기본 꺼짐(원하는 사람만 켬).

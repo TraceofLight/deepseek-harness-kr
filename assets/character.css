@@ -25,8 +25,25 @@
 
 /* 캐릭터 위에서는 손가락 커서 */
 html.dsc-hover, html.dsc-hover * { cursor: pointer !important; }
+/* 어깨 위에서는 어깨에 손을 올리는 커서 (1초 꾹 누르면 옮길 수 있음) */
+html.dsc-shoulder, html.dsc-shoulder * { cursor: url("data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2232%22 height=%2232%22 viewBox=%2212 6 28 28%22%3E%3Cg fill=%22%23ffe1d6%22 stroke=%22%238a4a66%22 stroke-width=%222%22 stroke-linejoin=%22round%22 stroke-linecap=%22round%22%3E%3Cpath d=%22M17 13 C 21 9, 31 9, 34 14 L 36 22 C 36.5 24, 34.5 25.5, 33 24 L 31.5 21.5 L 31.5 29.5 C 31.5 31.5, 28.5 31.5, 28.5 29.5 L 28.5 30.5 C 28.5 32.5, 25.5 32.5, 25.5 30.5 L 25.5 30.5 C 25.5 32.5, 22.5 32.5, 22.5 30.5 L 22.5 29 C 22.5 31, 19.5 31, 19.5 29 L 19.5 21 C 17.5 19, 16 16, 17 13 Z%22/%3E%3C/g%3E%3Cpath d=%22M25.5 23 L 25.5 30 M 28.5 23 L 28.5 29.5 M 22.5 23 L 22.5 29%22 stroke=%22%238a4a66%22 stroke-width=%221.4%22 stroke-linecap=%22round%22 opacity=%22.55%22/%3E%3C/svg%3E") 16 16, grab !important; }
+/* 어깨 꾹 누르기 표시: 마우스 커서 자리를 손 아이콘과 1초 동안 차오르는 고리가 대신함 (표시 중엔 진짜 커서를 숨김) */
+#dsc-grip-hint { position: fixed; z-index: 2147483000; pointer-events: none; width: 38px; height: 38px; transform: translate(-50%, -50%); opacity: 0; transition: opacity .12s ease; }
+#dsc-grip-hint.show { opacity: 1; }
+#dsc-grip-hint svg { display: block; filter: drop-shadow(0 3px 8px rgba(80, 90, 160, .25)); }
+#dsc-grip-hint .bg { fill: #fff; }
+#dsc-grip-hint .track, #dsc-grip-hint .fill { fill: none; stroke-width: 3.5; }
+#dsc-grip-hint .track { stroke: #e3e8ff; }
+#dsc-grip-hint .fill { stroke: #8fa6ff; stroke-linecap: round; stroke-dasharray: 100; stroke-dashoffset: 100; transform: rotate(-90deg); transform-origin: 20px 20px; }
+#dsc-grip-hint.run .fill { animation: dsc-grip-fill 1s linear forwards; }
+#dsc-grip-hint .hand { fill: #ffe1d6; stroke: #8a4a66; stroke-width: 2; stroke-linejoin: round; }
+#dsc-grip-hint .crease { fill: none; stroke: #8a4a66; stroke-width: 1.4; stroke-linecap: round; opacity: .55; }
+@keyframes dsc-grip-fill { to { stroke-dashoffset: 0; } }
+html body[data-ds-dark-theme] #dsc-grip-hint .bg { fill: #2b2d3a; }
+html body[data-ds-dark-theme] #dsc-grip-hint .track { stroke: #444a66; }
 /* 끌어서 옮기는 동안 */
 html.dsc-grabbing, html.dsc-grabbing * { cursor: grabbing !important; user-select: none !important; }
+html.dsc-ring, html.dsc-ring * { cursor: none !important; }
 
 /* 추론 혼잣말 말풍선: 점선, 연한 글씨 */
 #dsc-bubble.mutter {

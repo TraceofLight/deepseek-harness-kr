@@ -46,7 +46,7 @@ type Frame = { now: number; dt: number; seconds: number; introCalm: boolean; tal
  * 집기 예약 (pointerdown이 만들고 pointermove·pointerup이 씀)
  * id = 포인터 번호, sx·sy = 누른 자리, h = 누른 곳의 캐릭터 지점(hitAt, 몸 밖이면 null), ox·oy = 캔버스 왼쪽 위에서 누른 자리까지의 거리
  */
-type DragPending = { id: number; sx: number; sy: number; h: number[] | null; ox: number; oy: number; touchGrab?: boolean; touchStroke?: boolean };
+type DragPending = { id: number; sx: number; sy: number; h: number[] | null; ox: number; oy: number; touchGrab?: boolean; touchStroke?: boolean; shoulderGrab?: boolean };
 /** 펫 창 프로세스가 보낸 메시지 */
 type PetMsg = { type: string; [key: string]: any };
 /** 사각 영역 (왼쪽·위·오른쪽·아래 경계). 펫 창 메시지·클릭 영역 형식이라 필드 이름 고정 */
@@ -88,7 +88,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
   const previousDsc = window.__dsc;
   life.add(() => {
     if (window.__dsc !== previousDsc) { if (previousDsc === undefined) delete window.__dsc; else window.__dsc = previousDsc; }
-    document.documentElement.classList.remove("dsc-hover", "dsc-grabbing");
+    document.documentElement.classList.remove("dsc-hover", "dsc-shoulder", "dsc-grabbing", "dsc-ring");
     if (petUsed) { try { fetch(new URL("../pet/hide", new URL(BASE, location.href)).href, { method: "POST", keepalive: true }).catch(() => {}); } catch {} }
   });
   // 아래 코드가 쓰는 타이머·프레임·창 리스너·DOM 감시는 모두 life에 묶여 한 번에 정리된다
@@ -230,6 +230,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         dockState: () => petLinkDock(),
         /** 지금 끌기 상태의 비교용 키 */
         dragKey: () => dragKeyRaw(),
+        shoulderGrab: () => shoulderGrabOn(),
         /** 외부 음성 상태 */
         voice: () => voiceState,
         /** 펫 창도 같은 렌더러로: 3D 모델 사용 여부·외곽선 (창 안 캐릭터가 처음 뜰 때 정한 값) */
@@ -349,6 +350,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         return { x: shown.x + W * k / 2, y: shown.y + H * k * 0.5 };
       };
       let touchHold = 0;   // 터치에서 길게 눌러 집기 모드로 들어가는 타이머 (오른쪽 버튼이 없는 화면용)
+      let shoulderHold = 0;   // 마우스로 어깨를 꾹 눌러 집기 모드로 들어가는 타이머 (트랙패드처럼 두 버튼을 함께 누르기 어려운 경우)
       let petDock: PetDock | null = null, petDocked = false, snapProgress = 0;   // 펫 창: 붙을 자리(DSH 창의 제자리, 화면 좌표), 붙은 뒤, 붙는 진행도
       // 바깥 펫 창 전용: 우클릭 메뉴 상태 ↔ 설정 패널 ↔ 크기. 크기는 '기본(머리 크기 맞춤) 대비 배율'로,
       // 펫 창 프로필(localStorage)에 남겨 다시 켜도 기억한다.
@@ -1152,7 +1154,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           hush();
           canvas.style.display = bubble.style.display = "none";
           veil.style.display = "none";
-          document.documentElement.classList.remove("dsc-hover", "dsc-grabbing");
+          document.documentElement.classList.remove("dsc-hover", "dsc-shoulder", "dsc-grabbing", "dsc-ring");
           setRender(false);
           if (link.open || link.follow) { link.opening = 0; try { link.post("hide"); } catch {} }   // 펫 창이 대신 보여 주던 중이면 함께 숨김
           showHideChip();
@@ -1661,6 +1663,16 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         if (region === "chest") return behaviors.has(EVENTS.chestTap) ? region : "body";
         if (region === "lower") return behaviors.has(EVENTS.lowerTap) ? region : "body";
         return region;
+      };
+      /** 어깨 꾹 누르기로 옮기기 설정 (기본 켜짐) */
+      const shoulderGrabOn = () => prefs.drag?.shoulder !== false;
+      /**
+       * 누른 자리가 어깨(팔 부위 중 부푼 소매 윗부분)인지 여부. 꼬마 모습과 가슴을 가린 팔은 제외
+       * @param h hitAt 결과(그림 위가 아니면 null)
+       */
+      const shoulderAt = (h: number[] | null) => {
+        if (!h || !shoulderGrabOn() || bodyWeight > 0.5 || touchRegion(h[0], h[1], h[2]) !== "arm") return false;
+        return rig.touchShape(h[0], h[1], h[2]).ratioY < GEOMETRY.shoulderBottom;
       };
       // 버튼·입력 요소와 입력 영역의 카드(승인·질문 팝업)는 아바타와 겹쳐도 클릭이 그대로 통하게
       const UI_HIT = 'button, a[href], input, textarea, select, summary, [contenteditable="true"], [class*="composerSeat"] [class*="_card"]';
@@ -2239,6 +2251,66 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           if (PET) PET.press(true);
         }, TOUCH.grabMs);
       };
+      // 어깨 손잡이: 어깨를 마우스로 1초 꾹 누르면 집기 모드 (커서가 쥔 손으로 바뀌고, 그 뒤 움직이면 옮겨짐). 그 전에 움직이거나 떼면 평소 반응
+      const SHOULDER = { holdMs: 1000, movePx: 8 };
+      // 꾹 누르기 표시: 마우스 커서 자리를 손 아이콘과 1초 동안 차오르는 고리가 대신함 (글 없이 "이만큼 누르고 있으면 된다"를 보여 줌)
+      // 표시 중에는 진짜 커서를 숨기고(html.dsc-ring) 아이콘이 커서를 따라다님. 끝나면 원래 커서로 돌아옴
+      const GRIP_HAND = '<g transform="translate(-0.8 3.2) scale(.8)"><path class="hand" d="M17 13 C 21 9, 31 9, 34 14 L 36 22 C 36.5 24, 34.5 25.5, 33 24 L 31.5 21.5 L 31.5 29.5 C 31.5 31.5, 28.5 31.5, 28.5 29.5 L 28.5 30.5 C 28.5 32.5, 25.5 32.5, 25.5 30.5 L 25.5 30.5 C 25.5 32.5, 22.5 32.5, 22.5 30.5 L 22.5 29 C 22.5 31, 19.5 31, 19.5 29 L 19.5 21 C 17.5 19, 16 16, 17 13 Z"/><path class="crease" d="M25.5 23 L 25.5 30 M 28.5 23 L 28.5 29.5 M 22.5 23 L 22.5 29"/></g>';
+      let gripRing: HTMLElement | null = null, gripRingTimer = 0;
+      /**
+       * 꾹 누르기 고리 표시
+       * @param mode "hold" = 누르는 동안 1초에 걸쳐 차오름, "hint" = 짧게 눌렀다 뗐을 때 한 번 차오르는 모습을 보여 주고 사라짐, "off" = 숨김
+       * @param x 창 x 좌표(clientX)
+       * @param y 창 y 좌표(clientY)
+       */
+      const showGripRing = (mode: "hold" | "hint" | "off", x = 0, y = 0) => {
+        clearTimeout(gripRingTimer);
+        const root = document.documentElement;
+        if (mode === "off") { gripRing?.classList.remove("show", "run"); root.classList.remove("dsc-ring"); return; }
+        if (!gripRing) {
+          gripRing = life.own(document.createElement("div"), (node) => node.remove());
+          gripRing.id = "dsc-grip-hint";
+          gripRing.setAttribute("aria-hidden", "true");
+          gripRing.innerHTML = '<svg viewBox="0 0 40 40" width="38" height="38"><circle class="bg" cx="20" cy="20" r="18"/><circle class="track" cx="20" cy="20" r="17"/><circle class="fill" cx="20" cy="20" r="17" pathLength="100"/>' + GRIP_HAND + "</svg>";
+          document.body.append(gripRing);
+          // 표시 중에는 커서 대신이므로 마우스를 따라 움직임
+          life.listen(document, "pointermove", (e) => { if (gripRing && root.classList.contains("dsc-ring")) moveGripRing(e.clientX, e.clientY); }, { passive: true, capture: true });
+        }
+        moveGripRing(x, y);
+        root.classList.add("dsc-ring");
+        gripRing.classList.remove("run"); void gripRing.offsetWidth; gripRing.classList.add("show", "run");   // 고리를 처음부터 다시 채움
+        if (mode === "hint") gripRingTimer = setTimeout(() => showGripRing("off"), SHOULDER.holdMs + 450);
+      };
+      /** 고리 아이콘을 커서 자리(가운데 맞춤)로 옮김 */
+      const moveGripRing = (x: number, y: number) => {
+        if (!gripRing) return;
+        gripRing.style.left = Math.round(x) + "px"; gripRing.style.top = Math.round(y) + "px";
+      };
+      /** 어깨 꾹 누르기의 집기 모드 전환 예약 */
+      let shoulderFrom = { x: 0, y: 0 };
+      const armShoulderHold = (e: PointerEvent) => {
+        clearTimeout(shoulderHold);
+        shoulderFrom = { x: e.clientX, y: e.clientY };
+        showGripRing("hold", e.clientX, e.clientY);
+        shoulderHold = setTimeout(() => {
+          shoulderHold = 0;
+          showGripRing("off");   // 다 찼으면 고리 대신 쥔 손 커서
+          const pending = drag.pending;
+          if (!pending || pending.id !== e.pointerId || drag.on || chestPulling) return;
+          pending.shoulderGrab = true;
+          strokeFrom = null; chestFrom = null;
+          document.documentElement.classList.remove("dsc-hover", "dsc-shoulder");
+          document.documentElement.classList.add("dsc-grabbing");   // 쥔 손 커서로 바꿔 이제 옮길 수 있음을 알림
+        }, SHOULDER.holdMs);
+      };
+      /** 어깨를 누른 채 기다리는 중에 많이 움직이면 꾹 누르기가 아님 (트랙패드의 작은 떨림은 허용) */
+      const shoulderHoldMoved = (e: PointerEvent) => {
+        const pending = drag.pending;
+        if (!shoulderHold || !pending || pending.shoulderGrab || e.pointerId !== pending.id) return;
+        if (Math.hypot(e.clientX - shoulderFrom.x, e.clientY - shoulderFrom.y) <= SHOULDER.movePx) return;
+        clearTimeout(shoulderHold); shoulderHold = 0;
+        showGripRing("off");
+      };
       /** 누르는 순간 펫 창을 숨긴 채 미리 띄우기(끌 수도 있으므로). 붙은 직후 아직 남은 펫 창이 있으면 바로 숨김 */
       const preparePetOnPress = () => {
         if (link.supported && link.petState === "none") link.post("warm");
@@ -2263,6 +2335,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         drag.pending = { id: e.pointerId, sx: px, sy: py, h, ox: px - shown.x, oy: py - shown.y };
         chord.valid = true;   // 캐릭터 위에서 시작한 누름만 코드 그레이스 대상 (빈 곳 클릭은 제외)
         if (e.pointerType === "touch") armTouchHold(e);
+        else if (shoulderAt(h)) armShoulderHold(e);
         if (PET) PET.press(true);   // 누르고 있는 동안은 커서가 몸 밖으로 벗어나도 클릭을 계속 받음
         preparePetOnPress();
       }, true);
@@ -2303,9 +2376,9 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       };
       // 집어 옮기기 키: 설정(prefs.drag.key)을 누른 채 왼쪽 버튼으로 끌면 옮길 수 있다.
       // 수식 키(Alt·Ctrl·Shift·Cmd)는 포인터 이벤트의 상태로, 그 밖의 키 하나는 keydown/keyup으로 기억한다.
-      // 기존처럼 왼쪽·오른쪽 버튼을 함께 누르는 방식도 그대로 동작한다.
-      /** 설정의 이동 키 원문(기본 "Alt"). 빈 문자열은 '이동 키 없음'으로 유지 */
-      const dragKeyRaw = () => String(prefs.drag?.key ?? "Alt").trim();
+      // 기존처럼 왼쪽·오른쪽 버튼을 함께 누르는 방식도 그대로 동작한다. 기본은 이동 키 없음 (어깨 꾹 누르기·양쪽 버튼)
+      /** 설정의 이동 키 원문(기본 없음). 빈 문자열은 '이동 키 없음' */
+      const dragKeyRaw = () => String(prefs.drag?.key ?? "").trim();
       /**
        * 이동 키 설정을 비교용 토큰으로 정규화
        * @returns 수식 키면 "alt"·"ctrl"·"shift"·"meta", 그 밖은 소문자 KeyboardEvent.key 값, 이동 키 없음이면 ""
@@ -2459,7 +2532,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
        * 터치에서 길게 누르거나 가로로 끌어 집기 모드가 되면 오른쪽 버튼을 누른 것처럼 취급
        */
       const carryHeld = (e: PointerEvent) => {
-        const touchGrab = !!(drag.pending && drag.pending.touchGrab && e.pointerId === drag.pending.id);
+        const touchGrab = !!(drag.pending && (drag.pending.touchGrab || drag.pending.shoulderGrab) && e.pointerId === drag.pending.id);
         const both = (e.buttons & 3) === 3 || touchGrab || dragKeyHeld(e);
         return both;
       };
@@ -2468,6 +2541,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         if (PET && petPanelOpen && petPanel && petPanel.contains(e.target)) return;   // 패널 안 조작은 캐릭터 끌기로 이어지지 않음
         if (e.pointerType !== "touch") chordButtonsMoved(e, performance.now());   // 두 번째 마우스 버튼 합류 (pointerdown preventDefault와 무관)
         classifyTouchMove(e);
+        shoulderHoldMoved(e);
         const both = carryHeld(e);
         if (chestFrom && !both && e.pointerId === chestFrom.id && chestMove(e)) return;
         if (strokeFrom && !both && strokeMove(e)) return;
@@ -2524,10 +2598,17 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       const endDrag = (e: PointerEvent, cancel: boolean) => {
         const pending = drag.pending;
         if (!pending || e.pointerId !== pending.id) return;   // 다른 손가락의 이벤트가 첫 손가락의 길게 누르기를 취소하지 않게 함
-        clearTimeout(touchHold);
+        const shortShoulder = !!shoulderHold;   // 어깨를 꾹 누르기 전에(1초 안에, 움직이지 않고) 뗌
+        clearTimeout(touchHold); clearTimeout(shoulderHold); shoulderHold = 0;
         drag.pending = null; strokeFrom = null;
         if (PET) PET.press(false);
-        if (!drag.on) { if (!cancel && pending.h) onTouch(pending.h[0], pending.h[1], pending.h[2]); return; }   // 끌지 않고 뗌 = 터치 (그림 위에서 눌렀을 때만)
+        if (!drag.on) {
+          if (pending.shoulderGrab) { document.documentElement.classList.remove("dsc-grabbing"); return; }   // 어깨를 꾹 쥐었다가 옮기지 않고 놓음 = 반응 없음
+          if (shortShoulder && !cancel) showGripRing("hint", e.clientX, e.clientY);   // 짧게 눌렀으면 차오르는 고리로 꾹 누르는 법을 알려 줌 (터치 반응은 그대로)
+          else if (shortShoulder) showGripRing("off");
+          if (!cancel && pending.h) onTouch(pending.h[0], pending.h[1], pending.h[2]);   // 끌지 않고 뗌 = 터치 (그림 위에서 눌렀을 때만)
+          return;
+        }
         drag.on = false;
         if (PET && petTracking) { petTracking = false; petGrab = null; PET.send({ type: "track", on: false }); }   // 이제부터 창 이동은 다시 페이지가 맡음 (놓은 뒤 미끄러짐·붙기)
         try { document.documentElement.releasePointerCapture(e.pointerId); } catch {}
@@ -2568,9 +2649,12 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       life.listen(document, "mousemove", (e) => {   // 캐릭터 위에서는 손가락 커서
         if (hidden) return;
         const now = performance.now(); if (now - hoverCheck < 80) return; hoverCheck = now;
-        if (PET && petPanelOpen && petPanel && petPanel.contains(e.target)) { document.documentElement.classList.remove("dsc-hover"); return; }
-        const over = !walking() && !!hitAt(e.clientX, e.clientY);
-        document.documentElement.classList.toggle("dsc-hover", over);
+        const root = document.documentElement;
+        if (PET && petPanelOpen && petPanel && petPanel.contains(e.target)) { root.classList.remove("dsc-hover", "dsc-shoulder"); return; }
+        if (drag.pending || drag.on) return;   // 누르고 있는 동안은 커서를 바꾸지 않음 (어깨를 쥔 채면 쥔 손 유지)
+        const h = walking() ? null : hitAt(e.clientX, e.clientY), shoulder = shoulderAt(h);
+        root.classList.toggle("dsc-shoulder", shoulder);   // 어깨 위에서는 어깨에 손을 올린 커서 (꾹 누르면 옮길 수 있다는 표시)
+        root.classList.toggle("dsc-hover", !!h && !shoulder);
       }, { passive: true });
       // 우클릭은 집어 옮기기의 보조 버튼이라, 끄는 중에는 메뉴를 열지 않는다 (펫 창에서는 놓은 뒤에만 메뉴)
       life.listen(document, "contextmenu", (e) => {
@@ -2871,6 +2955,10 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
         sleep: () => SLEEP.state,
         /** 창 좌표 자리의 몸 부위 이름, 그림 밖이면 null */
         regionAt: (cx: number, cy: number) => { const h = hitAt(cx, cy); return h && touchRegion(h[0], h[1], h[2]); },
+        /** 창 좌표 자리의 모양 정보(부위 그림·세로 비율), 그림 밖이면 null */
+        shapeAt: (cx: number, cy: number) => { const h = hitAt(cx, cy); return h && rig.touchShape(h[0], h[1], h[2]); },
+        /** 크기 확인용: 지금 그리는 배율·자유 위치 배율·창 안↔펫 창 머리 맞춤 비율 등 */
+        scale: () => ({ pet: !!PET, curK, shownK: shown.k, freeK: free.k, freeOn: free.on, headGain: HEAD_GAIN, petHeadRatio: PET_HEAD_RATIO, petBaseK, petRatio: PET ? petLoadRatio() : null, dpr: devicePixelRatio, canvasCss: canvas.getBoundingClientRect().width, inner: [innerWidth, innerHeight] }),
         /** 도망·산책으로 옆으로 비켜난 거리(px, + 오른쪽 · - 왼쪽) */
         fleeX: () => fleeX,
         /** 보이는 말풍선 문구, 없으면 빈 문자열 */
@@ -2902,7 +2990,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
       };
       /** 펫 창 안에서도 같은 이동 키로 옮길 수 있게 보내는 메시지 목록 (일반 키는 포커스 없는 펫 창에 눌림 상태도 전달) */
       const petLinkDragMessages = () => {
-        const list: PetMessage[] = [["drag", [dragKeyRaw()]]];
+        const list: PetMessage[] = [["drag", [dragKeyRaw(), shoulderGrabOn()]]];
         const dragToken = dragKeyToken();
         if (dragToken && !DRAG_MODIFIER_TOKENS.has(dragToken)) list.push(["dragheld", [dragToken, pressedKeys.has(dragToken)]]);
         return list;
@@ -3027,7 +3115,7 @@ export function createCharacter({ base, life, pet = null, prefs: initialPrefs = 
           /** 외부 음성 상태 반영 */
           voice: (args: any[]) => { voiceState = args[0]; },
           /** 창 안 캐릭터와 같은 이동 키 설정 */
-          drag: (args: any[]) => { prefs.drag = { key: args[0] }; },
+          drag: (args: any[]) => { prefs.drag = { key: args[0], shoulder: args[1] !== false }; },
           /** 포커스 없는 펫 창에 일반 이동 키의 눌림 상태 전달 */
           dragheld: (args: any[]) => { if (args[1]) pressedKeys.add(args[0]); else pressedKeys.delete(args[0]); },
           /** 창 안 캐릭터가 창 밖에서 놓음(던질 속도 vx·vy) */

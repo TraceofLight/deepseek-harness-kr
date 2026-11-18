@@ -50,7 +50,7 @@ export interface CharacterPrefs {
   /** 모바일(터치 화면)에서 보이기 여부 (false일 때만 숨김) */
   mobile?: { enabled?: boolean }
   /** 끌어서 옮기는 보조 키 (기본 Alt, 빈 문자열은 이동 키 없음) */
-  drag?: { key?: string }
+  drag?: { key?: string; shoulder?: boolean }
   /** 플러그인·자동화 패널 때문에 창 안 캐릭터를 숨길지 여부 */
   pageHidden?: boolean
   /** 실험: 3D 모델 폴더를 쓸지 여부 (처음 뜰 때만 읽음), 눈썹 세기(배율)·부드럽게 따라가는 시간(초, 매 프레임 읽음), 구운 AO 켜기(처음 뜰 때만)·세기(0~1, 매 프레임) */

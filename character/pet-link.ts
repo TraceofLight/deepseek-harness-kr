@@ -16,7 +16,7 @@
 //   onLeave(): 펫 창이 붙었거나 닫힘 → 창 안 제자리로 되돌리고 다시 그림
 //   onConfig(key, value): 펫 창 메뉴·설정 패널에서 바꾼 값
 //   snapshot(): 지금 표정·자세를 펫 창에 맞출 메시지 목록, dragMessages(): 이동 키 메시지 목록
-//   dockState(): { dock, outfit, avatar? } 붙을 자리와 소품·옷, 3D 모델 조절값(바뀌면 펫 창에 보냄), dragKey(): 이동 키, voice(): 외부 음성 상태
+//   dockState(): { dock, outfit, avatar? } 붙을 자리와 소품·옷, 3D 모델 조절값(바뀌면 펫 창에 보냄), dragKey(): 이동 키, shoulderGrab(): 어깨 꾹 누르기 사용, voice(): 외부 음성 상태
 //   avatar(): 창 안 캐릭터의 3D 모델 사용 여부·외곽선 (warm·open에 실어 펫 창이 같은 렌더러로 그리게 함, 없으면 안 보냄)
 //   idle(): 미리 띄워도 되는 한가한 때인지, hidden(): 캔버스를 숨긴 상태인지, openPose(): 지금 자리(화면 좌표 { k, x, y })
 //   log: 진단 기록 통로 (기본 character/log.ts의 log, 시험에서 바꿔 끼움)
@@ -40,6 +40,8 @@ export interface PetLinkDeps {
   dockState(): { dock: unknown; outfit: unknown; avatar?: unknown };
   avatar?(): unknown;
   dragKey(): string;
+  /** 어깨 꾹 누르기로 옮기기 켜짐 여부 (없으면 켜짐) */
+  shoulderGrab?(): boolean;
   voice(): unknown;
   idle(): boolean;
   hidden(): boolean;
@@ -185,8 +187,8 @@ export function createPetLink(deps: PetLinkDeps): PetLink {
       const sig = JSON.stringify([dock, outfit, avatar]);
       if (sig !== link.last) { link.last = sig; link.queue.push(["dock", [dock]], ["outfit", [outfit]]); if (avatar !== undefined) link.queue.push(["avatar", [avatar]]); }
       // 이동 보조 키 설정이 바뀌면 펫 창에도 알려 줌 (펫 창은 설정 파일을 읽지 않는다)
-      const dragNow = deps.dragKey();
-      if (dragNow !== link.dragMod) { link.dragMod = dragNow; link.queue.push(["drag", [dragNow]]); }
+      const dragNow = deps.dragKey(), shoulderNow = deps.shoulderGrab?.() !== false, dragSig = dragNow + "|" + shoulderNow;
+      if (dragSig !== link.dragMod) { link.dragMod = dragSig; link.queue.push(["drag", [dragNow, shoulderNow]]); }
       if (link.queue.length) { const list = link.queue; link.queue = []; link.post("send", { list }); }
     }
     link.poll();

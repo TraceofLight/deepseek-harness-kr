@@ -33,6 +33,7 @@ interface PluginSettings {
   canvasToggle?: boolean
   canvasToggleKey?: string
   dragKey?: string
+  shoulderGrab?: boolean
   avatarModelDir?: string
   avatarOutline?: string
   avatarBrowScale?: number | string
@@ -306,8 +307,8 @@ function characterPrefs(value: PluginSettings) {
       browScale: browScale(value.avatarBrowScale), browSmooth: browSmoothMs(value.avatarBrowSmooth) / 1000,
       // 구운 AO: 켜기는 처음 뜰 때만, 세기는 매 프레임 읽음
       ao: value.avatarAo === true, aoStrength: aoStrength(value.avatarAoStrength) },
-    // 캐릭터 이동 보조 키: 포인터 이벤트마다 읽는다. 빈 문자열이면 '이동 키 없음'
-    drag: { key: value.dragKey ?? 'Alt' },
+    // 캐릭터 이동: 보조 키(빈 문자열이면 '이동 키 없음')와 어깨 꾹 누르기 사용 여부. 포인터 이벤트마다 읽는다
+    drag: { key: value.dragKey ?? '', shoulder: value.shoulderGrab !== false },
     // '대사 ex': 켜면 assets/dsc-lines-ex.json의 대사를 덮어쓴다 (기본 꺼짐)
     extra: { enabled: value.extraLines === true },
     // 한국어 혼잣말: 혼잣말할 때마다 읽는다 (모델·엔진은 호스트가 자동으로 준비)
@@ -856,7 +857,7 @@ function ShortcutField({ label, control, hintId, hint, value, placeholder, ariaL
  * 이동 키 입력 칸. 수식 키 하나 또는 일반 키 하나를 그대로 등록. Esc 취소 · Backspace/Delete 지우기 · Tab은 포커스 이동
  * @param inactive true면 흐리게 표시 (캐릭터가 꺼져 있을 때)
  */
-function DragKeyField({ label, hintId, hint, value, ariaLabel, ko, disabled, inactive, onChange }: KeyFieldProps) {
+function DragKeyField({ label, hintId, hint, value, placeholder, ariaLabel, ko, disabled, inactive, onChange }: KeyFieldProps & { placeholder?: string }) {
   const [recording, setRecording] = React.useState(false)
   const [held, setHeld] = React.useState('')
   /** 녹음 끝내기 */
@@ -887,7 +888,7 @@ function DragKeyField({ label, hintId, hint, value, ariaLabel, ko, disabled, ina
         readOnly: true,
         'aria-label': ariaLabel,
         'aria-describedby': hintId,
-        placeholder: recording ? (ko ? '키를 누르세요…' : 'Press a key…') : '',
+        placeholder: recording ? (ko ? '키를 누르세요…' : 'Press a key…') : (placeholder ?? ''),
         style: { width: 150, cursor: disabled ? 'default' : 'pointer', textAlign: 'center', borderColor: recording ? '#7aa7ff' : undefined, opacity: inactive ? 0.45 : 1 },
         value: recording ? held : (value ?? ''),
         disabled,
@@ -972,7 +973,7 @@ function settingsPage(ctx: DshContext, form: ConfigForm<PluginSettings>, updater
     const characterOn = state.value?.character !== false
     const canvasToggle = state.value?.canvasToggle === true
     const canvasKeyValue = state.value?.canvasToggleKey ?? 'Ctrl+Shift+H'
-    const dragKey = state.value?.dragKey ?? 'Alt'
+    const dragKey = state.value?.dragKey ?? ''
     return React.createElement('div', { style: { display: 'grid', gap: 16 } },
       ...fields.map(([field, label]) => React.createElement('label', { key: field, style: row },
         React.createElement('span', null, label),
@@ -1087,14 +1088,23 @@ function settingsPage(ctx: DshContext, form: ConfigForm<PluginSettings>, updater
           hintId: DRAG_HINT_ID,
           hint: !characterOn
             ? (ko ? '캐릭터와 말풍선이 꺼져 있을 때는 사용할 수 없습니다.' : 'Unavailable while the character and speech bubbles are off.')
-            : (ko ? '캐릭터를 끌어 옮기는 동안 누를 키를 지정합니다. 수식 키(Alt·Ctrl·Shift·Cmd)나 일반 키 중 하나를 등록하세요. 비워 두면 마우스 왼쪽·오른쪽 버튼을 함께 누른 채 끌어 옮깁니다.'
-              : 'Hold this key while dragging to move the character. Record one modifier (Alt, Ctrl, Shift, Cmd) or one other key. Empty needs both buttons.'),
+            : (ko ? '원하면 캐릭터를 끌어 옮기는 동안 누를 키를 지정합니다. 수식 키(Alt·Ctrl·Shift·Cmd)나 일반 키 중 하나를 등록하세요. 비워 두면 이동 키 없이 어깨 꾹 누르기나 마우스 왼쪽·오른쪽 버튼을 함께 누른 채 끌어 옮깁니다.'
+              : 'Optionally hold this key while dragging to move the character. Record one modifier (Alt, Ctrl, Shift, Cmd) or one other key. Empty uses the shoulder hold or both buttons.'),
           value: dragKey,
+          placeholder: ko ? '없음' : 'None',
           ariaLabel: ko ? '캐릭터 이동 키 입력' : 'Record drag key',
           ko, disabled: off || !characterOn, inactive: !characterOn,
           /** 녹음한 이동 키 저장 */
           onChange: (key: string) => change('dragKey', key),
         }),
+        React.createElement('label', { style: row },
+          React.createElement('span', { style: { opacity: characterOn ? 1 : 0.55 } }, ko ? '어깨를 1초 꾹 눌러 옮기기' : 'Hold the shoulder for 1 second to move'),
+          React.createElement('input', { type: 'checkbox', role: 'switch', checked: state.value?.shoulderGrab !== false, disabled: off || !characterOn,
+            /** 어깨 꾹 누르기 사용 여부 저장 */
+            onChange: (event) => change('shoulderGrab', event.target.checked) })),
+        React.createElement('p', { style: { margin: 0, opacity: characterOn ? 0.7 : 0.45 } }, ko
+          ? '캐릭터 어깨에 마우스를 올리면 커서가 손 모양으로 바뀝니다. 그대로 꾹 누르면 커서 자리에서 고리가 1초 동안 차오르고, 다 차면 끌어 옮길 수 있습니다. 짧게 누르면 커서 자리에서 고리가 한 번 차오르며 알려 줍니다. 트랙패드처럼 두 버튼을 함께 누르기 어려울 때 쓰세요.'
+          : 'Over the character\'s shoulder the cursor becomes a hand. Press and hold: a ring fills around the cursor for 1 second, then drag to move. A short press plays the ring once as a hint. Handy on trackpads.'),
         // 캔버스만 숨김/표시: 캐릭터 설정을 끄는 것이 아니라 그리기만 멈춘다. 스위치를 단축키 칸 바로 왼쪽에 둔다.
         React.createElement(ShortcutField, {
           label: ko ? '캔버스만 숨김/표시 단축키 (비우면 사용 안 함)' : 'Hide/show canvas shortcut (empty to disable)',

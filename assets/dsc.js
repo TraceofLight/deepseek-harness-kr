@@ -465,10 +465,10 @@
           link.queue.push(["dock", [dock]], ["outfit", [outfit]]);
           if (avatar !== void 0) link.queue.push(["avatar", [avatar]]);
         }
-        const dragNow = deps.dragKey();
-        if (dragNow !== link.dragMod) {
-          link.dragMod = dragNow;
-          link.queue.push(["drag", [dragNow]]);
+        const dragNow = deps.dragKey(), shoulderNow = deps.shoulderGrab?.() !== false, dragSig = dragNow + "|" + shoulderNow;
+        if (dragSig !== link.dragMod) {
+          link.dragMod = dragSig;
+          link.queue.push(["drag", [dragNow, shoulderNow]]);
         }
         if (link.queue.length) {
           const list = link.queue;
@@ -745,6 +745,8 @@
     // 터치: 가슴과 아랫배·허리 아래의 경계 (전신 높이 비율)
     coverArmBottom: 0.45,
     // 터치: 가슴을 가린 팔을 가슴으로 치는 아래 끝 (전신 높이 비율)
+    shoulderBottom: 0.24,
+    // 어깨 손잡이: 팔 부위 중 이 높이보다 위(부푼 소매 윗부분)를 어깨로 봄 (전신 높이 비율, 팔 맨 위 ≈ 0.21)
     chestCenterX: 0.45,
     // 터치: 가슴 타원 가운데 x (전신 폭 비율)
     chestCenterY: 0.295,
@@ -1760,7 +1762,7 @@
         if (previousDsc === void 0) delete window.__dsc;
         else window.__dsc = previousDsc;
       }
-      document.documentElement.classList.remove("dsc-hover", "dsc-grabbing");
+      document.documentElement.classList.remove("dsc-hover", "dsc-shoulder", "dsc-grabbing", "dsc-ring");
       if (petUsed) {
         try {
           fetch(new URL("../pet/hide", new URL(BASE, location.href)).href, { method: "POST", keepalive: true }).catch(() => {
@@ -1910,6 +1912,7 @@
           dockState: () => petLinkDock(),
           /** 지금 끌기 상태의 비교용 키 */
           dragKey: () => dragKeyRaw(),
+          shoulderGrab: () => shoulderGrabOn(),
           /** 외부 음성 상태 */
           voice: () => voiceState,
           /** 펫 창도 같은 렌더러로: 3D 모델 사용 여부·외곽선 (창 안 캐릭터가 처음 뜰 때 정한 값) */
@@ -2010,6 +2013,7 @@
           return { x: shown.x + W * k / 2, y: shown.y + H * k * 0.5 };
         };
         let touchHold = 0;
+        let shoulderHold = 0;
         let petDock = null, petDocked = false, snapProgress = 0;
         const PET_SIZE_KEY = "dsc-pet-size";
         let petPanel = null, petPanelOpen = false, petPanelWin = { w: 0, h: 0 };
@@ -2745,7 +2749,7 @@
             hush();
             canvas.style.display = bubble.style.display = "none";
             veil.style.display = "none";
-            document.documentElement.classList.remove("dsc-hover", "dsc-grabbing");
+            document.documentElement.classList.remove("dsc-hover", "dsc-shoulder", "dsc-grabbing", "dsc-ring");
             setRender(false);
             if (link.open || link.follow) {
               link.opening = 0;
@@ -3281,6 +3285,11 @@
           if (region === "chest") return behaviors.has(EVENTS.chestTap) ? region : "body";
           if (region === "lower") return behaviors.has(EVENTS.lowerTap) ? region : "body";
           return region;
+        };
+        const shoulderGrabOn = () => prefs.drag?.shoulder !== false;
+        const shoulderAt = (h) => {
+          if (!h || !shoulderGrabOn() || bodyWeight > 0.5 || touchRegion(h[0], h[1], h[2]) !== "arm") return false;
+          return rig.touchShape(h[0], h[1], h[2]).ratioY < GEOMETRY.shoulderBottom;
         };
         const UI_HIT = 'button, a[href], input, textarea, select, summary, [contenteditable="true"], [class*="composerSeat"] [class*="_card"]';
         const hitAt = (cx, cy) => {
@@ -3866,6 +3875,64 @@
             if (PET) PET.press(true);
           }, TOUCH.grabMs);
         };
+        const SHOULDER = { holdMs: 1e3, movePx: 8 };
+        const GRIP_HAND = '<g transform="translate(-0.8 3.2) scale(.8)"><path class="hand" d="M17 13 C 21 9, 31 9, 34 14 L 36 22 C 36.5 24, 34.5 25.5, 33 24 L 31.5 21.5 L 31.5 29.5 C 31.5 31.5, 28.5 31.5, 28.5 29.5 L 28.5 30.5 C 28.5 32.5, 25.5 32.5, 25.5 30.5 L 25.5 30.5 C 25.5 32.5, 22.5 32.5, 22.5 30.5 L 22.5 29 C 22.5 31, 19.5 31, 19.5 29 L 19.5 21 C 17.5 19, 16 16, 17 13 Z"/><path class="crease" d="M25.5 23 L 25.5 30 M 28.5 23 L 28.5 29.5 M 22.5 23 L 22.5 29"/></g>';
+        let gripRing = null, gripRingTimer = 0;
+        const showGripRing = (mode, x = 0, y = 0) => {
+          clearTimeout(gripRingTimer);
+          const root = document.documentElement;
+          if (mode === "off") {
+            gripRing?.classList.remove("show", "run");
+            root.classList.remove("dsc-ring");
+            return;
+          }
+          if (!gripRing) {
+            gripRing = life.own(document.createElement("div"), (node) => node.remove());
+            gripRing.id = "dsc-grip-hint";
+            gripRing.setAttribute("aria-hidden", "true");
+            gripRing.innerHTML = '<svg viewBox="0 0 40 40" width="38" height="38"><circle class="bg" cx="20" cy="20" r="18"/><circle class="track" cx="20" cy="20" r="17"/><circle class="fill" cx="20" cy="20" r="17" pathLength="100"/>' + GRIP_HAND + "</svg>";
+            document.body.append(gripRing);
+            life.listen(document, "pointermove", (e) => {
+              if (gripRing && root.classList.contains("dsc-ring")) moveGripRing(e.clientX, e.clientY);
+            }, { passive: true, capture: true });
+          }
+          moveGripRing(x, y);
+          root.classList.add("dsc-ring");
+          gripRing.classList.remove("run");
+          void gripRing.offsetWidth;
+          gripRing.classList.add("show", "run");
+          if (mode === "hint") gripRingTimer = setTimeout(() => showGripRing("off"), SHOULDER.holdMs + 450);
+        };
+        const moveGripRing = (x, y) => {
+          if (!gripRing) return;
+          gripRing.style.left = Math.round(x) + "px";
+          gripRing.style.top = Math.round(y) + "px";
+        };
+        let shoulderFrom = { x: 0, y: 0 };
+        const armShoulderHold = (e) => {
+          clearTimeout(shoulderHold);
+          shoulderFrom = { x: e.clientX, y: e.clientY };
+          showGripRing("hold", e.clientX, e.clientY);
+          shoulderHold = setTimeout(() => {
+            shoulderHold = 0;
+            showGripRing("off");
+            const pending = drag.pending;
+            if (!pending || pending.id !== e.pointerId || drag.on || chestPulling) return;
+            pending.shoulderGrab = true;
+            strokeFrom = null;
+            chestFrom = null;
+            document.documentElement.classList.remove("dsc-hover", "dsc-shoulder");
+            document.documentElement.classList.add("dsc-grabbing");
+          }, SHOULDER.holdMs);
+        };
+        const shoulderHoldMoved = (e) => {
+          const pending = drag.pending;
+          if (!shoulderHold || !pending || pending.shoulderGrab || e.pointerId !== pending.id) return;
+          if (Math.hypot(e.clientX - shoulderFrom.x, e.clientY - shoulderFrom.y) <= SHOULDER.movePx) return;
+          clearTimeout(shoulderHold);
+          shoulderHold = 0;
+          showGripRing("off");
+        };
         const preparePetOnPress = () => {
           if (link.supported && link.petState === "none") link.post("warm");
           else if (!PET && link.petState === "shown" && !link.open && !link.follow) link.post("hide");
@@ -3903,6 +3970,7 @@
           drag.pending = { id: e.pointerId, sx: px, sy: py, h, ox: px - shown.x, oy: py - shown.y };
           chord.valid = true;
           if (e.pointerType === "touch") armTouchHold(e);
+          else if (shoulderAt(h)) armShoulderHold(e);
           if (PET) PET.press(true);
           preparePetOnPress();
         }, true);
@@ -3937,7 +4005,7 @@
           if (performance.now() - stroke.t < POT_MS) return dy > 55 && dy > dx * 1.2 ? "pot" : null;
           return dy > 40 && dy > dx * 0.8 ? "basin" : null;
         };
-        const dragKeyRaw = () => String(prefs.drag?.key ?? "Alt").trim();
+        const dragKeyRaw = () => String(prefs.drag?.key ?? "").trim();
         const dragKeyToken = () => {
           const text = dragKeyRaw().toLowerCase();
           if (!text || text === "none") return "";
@@ -4081,7 +4149,7 @@
           e.preventDefault();
         };
         const carryHeld = (e) => {
-          const touchGrab = !!(drag.pending && drag.pending.touchGrab && e.pointerId === drag.pending.id);
+          const touchGrab = !!(drag.pending && (drag.pending.touchGrab || drag.pending.shoulderGrab) && e.pointerId === drag.pending.id);
           const both = (e.buttons & 3) === 3 || touchGrab || dragKeyHeld(e);
           return both;
         };
@@ -4090,6 +4158,7 @@
           if (PET && petPanelOpen && petPanel && petPanel.contains(e.target)) return;
           if (e.pointerType !== "touch") chordButtonsMoved(e, performance.now());
           classifyTouchMove(e);
+          shoulderHoldMoved(e);
           const both = carryHeld(e);
           if (chestFrom && !both && e.pointerId === chestFrom.id && chestMove(e)) return;
           if (strokeFrom && !both && strokeMove(e)) return;
@@ -4139,11 +4208,20 @@
         const endDrag = (e, cancel) => {
           const pending = drag.pending;
           if (!pending || e.pointerId !== pending.id) return;
+          const shortShoulder = !!shoulderHold;
           clearTimeout(touchHold);
+          clearTimeout(shoulderHold);
+          shoulderHold = 0;
           drag.pending = null;
           strokeFrom = null;
           if (PET) PET.press(false);
           if (!drag.on) {
+            if (pending.shoulderGrab) {
+              document.documentElement.classList.remove("dsc-grabbing");
+              return;
+            }
+            if (shortShoulder && !cancel) showGripRing("hint", e.clientX, e.clientY);
+            else if (shortShoulder) showGripRing("off");
             if (!cancel && pending.h) onTouch(pending.h[0], pending.h[1], pending.h[2]);
             return;
           }
@@ -4215,12 +4293,15 @@
           const now = performance.now();
           if (now - hoverCheck < 80) return;
           hoverCheck = now;
+          const root = document.documentElement;
           if (PET && petPanelOpen && petPanel && petPanel.contains(e.target)) {
-            document.documentElement.classList.remove("dsc-hover");
+            root.classList.remove("dsc-hover", "dsc-shoulder");
             return;
           }
-          const over = !walking() && !!hitAt(e.clientX, e.clientY);
-          document.documentElement.classList.toggle("dsc-hover", over);
+          if (drag.pending || drag.on) return;
+          const h = walking() ? null : hitAt(e.clientX, e.clientY), shoulder = shoulderAt(h);
+          root.classList.toggle("dsc-shoulder", shoulder);
+          root.classList.toggle("dsc-hover", !!h && !shoulder);
         }, { passive: true });
         life.listen(document, "contextmenu", (e) => {
           if (hidden) return;
@@ -4504,6 +4585,13 @@
             const h = hitAt(cx, cy);
             return h && touchRegion(h[0], h[1], h[2]);
           },
+          /** 창 좌표 자리의 모양 정보(부위 그림·세로 비율), 그림 밖이면 null */
+          shapeAt: (cx, cy) => {
+            const h = hitAt(cx, cy);
+            return h && rig.touchShape(h[0], h[1], h[2]);
+          },
+          /** 크기 확인용: 지금 그리는 배율·자유 위치 배율·창 안↔펫 창 머리 맞춤 비율 등 */
+          scale: () => ({ pet: !!PET, curK, shownK: shown.k, freeK: free.k, freeOn: free.on, headGain: HEAD_GAIN, petHeadRatio: PET_HEAD_RATIO, petBaseK, petRatio: PET ? petLoadRatio() : null, dpr: devicePixelRatio, canvasCss: canvas.getBoundingClientRect().width, inner: [innerWidth, innerHeight] }),
           /** 도망·산책으로 옆으로 비켜난 거리(px, + 오른쪽 · - 왼쪽) */
           fleeX: () => fleeX,
           /** 보이는 말풍선 문구, 없으면 빈 문자열 */
@@ -4538,7 +4626,7 @@
           return list;
         };
         const petLinkDragMessages = () => {
-          const list = [["drag", [dragKeyRaw()]]];
+          const list = [["drag", [dragKeyRaw(), shoulderGrabOn()]]];
           const dragToken = dragKeyToken();
           if (dragToken && !DRAG_MODIFIER_TOKENS.has(dragToken)) list.push(["dragheld", [dragToken, pressedKeys.has(dragToken)]]);
           return list;
@@ -4680,7 +4768,7 @@
             },
             /** 창 안 캐릭터와 같은 이동 키 설정 */
             drag: (args) => {
-              prefs.drag = { key: args[0] };
+              prefs.drag = { key: args[0], shoulder: args[1] !== false };
             },
             /** 포커스 없는 펫 창에 일반 이동 키의 눌림 상태 전달 */
             dragheld: (args) => {

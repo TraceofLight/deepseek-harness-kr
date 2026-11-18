@@ -118,7 +118,7 @@ test('150ms 틱: 붙을 자리·소품·이동 키가 바뀔 때만 보내고, �
   h.link.relay('say', ['a'])
   tick(); await flush()
   const sent = h.posts.filter(([path]) => path === 'send')
-  assert.deepEqual(sent.at(-1)[1].list, [['say', ['a']], ['dock', [h.state.dock]], ['outfit', [h.state.outfit]], ['drag', ['Alt']]])
+  assert.deepEqual(sent.at(-1)[1].list, [['say', ['a']], ['dock', [h.state.dock]], ['outfit', [h.state.outfit]], ['drag', ['Alt', true]]])
   assert.deepEqual(h.link.queue, [])
   const count = h.posts.length
   tick(); await flush()

@@ -364,7 +364,7 @@ test('shortcut hint id stays unique and the character-off guidance uses its own 
   }
 })
 
-test('empty drag key stays empty so both buttons are required again', () => {
+test('empty drag key stays empty so the shoulder hold or both buttons move the character', () => {
   const h = clientHarness({ character: true, theme: false, translation: false, dragKey: '' })
   try {
     const ctx = h.ctx(); h.client.apply(ctx)
@@ -372,20 +372,24 @@ test('empty drag key stays empty so both buttons are required again', () => {
     const Page = h.pages.get(packageName + '#deepseek-harness-kr')
     const html = renderToStaticMarkup(React.createElement(Page, { view: 'page' }))
     assert.match(html, /aria-label="Record drag key"[^>]*value=""/)
-    assert.match(html, /Empty needs both buttons/)
+    assert.match(html, /Empty uses the shoulder hold or both buttons/)
+    assert.match(html, /Hold the shoulder for 1 second to move<\/span><input type="checkbox" role="switch" checked=""/)
+    assert.equal(h.client.internals.linkOf(ctx).prefs.drag.shoulder, true, '어깨 꾹 누르기는 기본 켜짐')
     ctx.dispose()
   } finally { h.dom.window.close() }
 })
 
 test('drag key, pet window shortcut and canvas toggle are configurable and defaulted', () => {
   const defaults = readLive(Config({}))
-  assert.equal(defaults.dragKey, 'Alt')
+  assert.equal(defaults.dragKey, '')   // Alt 끌기는 기본에서 뺌 (원하면 설정에서 지정)
+  assert.equal(defaults.shoulderGrab, true)
   assert.equal(defaults.petToggleKey, 'Ctrl+Shift+P')
   assert.equal(defaults.canvasToggle, false)
   assert.equal(defaults.canvasToggleKey, 'Ctrl+Shift+H')
   assert.equal(defaults.earHide, false)
-  const custom = readLive(Config({ dragKey: 'F', petToggleKey: '', canvasToggle: true, canvasToggleKey: 'H', earHide: true }))
+  const custom = readLive(Config({ dragKey: 'F', shoulderGrab: false, petToggleKey: '', canvasToggle: true, canvasToggleKey: 'H', earHide: true }))
   assert.equal(custom.dragKey, 'F')
+  assert.equal(custom.shoulderGrab, false)
   assert.equal(custom.petToggleKey, '')
   assert.equal(custom.canvasToggle, true)
   assert.equal(custom.canvasToggleKey, 'H')
@@ -561,12 +565,12 @@ test('character source supports modifier drag and a pet window toggle', async ()
   for (const code of [source, bundle]) {
     assert.match(code, /const both = \(e\.buttons & 3\) === 3 \|\| touchGrab \|\| dragKeyHeld\(e\)/)
     assert.match(code, /hooks\.togglePet = link\.toggle/)
-    assert.match(code, /const list\s*= \[\["drag", \[dragKeyRaw\(\)\]\]\];/)   // 펫 창이 보이기 시작할 때 이동 키를 보낸다 (petLinkDragMessages)
+    assert.match(code, /const list\s*= \[\["drag", \[dragKeyRaw\(\), shoulderGrabOn\(\)\]\]\];/)   // 펫 창이 보이기 시작할 때 이동 키를 보낸다 (petLinkDragMessages)
     assert.match(code, /hooks\.toggleCanvas = \(\) => setHidden\(!hidden\)/)
     assert.match(code, /id = "dsc-hide-chip"/)
   }
   // 펫 창은 창 안 캐릭터가 보낸 이동 키와 키 눌림 상태를 받는다 (번들은 esbuild가 줄을 바꿔 찍어 소스로 확인)
-  assert.match(source, /drag: \(args\) => \{ prefs\.drag = \{ key: args\[0\] \}; \}/)
+  assert.match(source, /drag: \(args\) => \{ prefs\.drag = \{ key: args\[0\], shoulder: args\[1\] !== false \}; \}/)
   assert.match(source, /dragheld: \(args\) =>/)
   // 펫 창 설정 패널 항목은 공용 정의에서 만든다
   assert.match(source, /const PET_OUTFIT_ROWS = OUTFIT_ITEMS\.map\(/)
@@ -840,8 +844,8 @@ test('plugin settings page exposes feature and power saving switches', () => {
     const Page = h.pages.get(packageName + '#deepseek-harness-kr')
     assert(Page)
     const html = renderToStaticMarkup(React.createElement(Page, { view: 'page' }))
-    assert.equal((html.match(/role="switch"/g) || []).length, 11)
-    assert.equal((html.match(/<input type="checkbox" role="switch" checked=""/g) || []).length, 6)
+    assert.equal((html.match(/role="switch"/g) || []).length, 12)
+    assert.equal((html.match(/<input type="checkbox" role="switch" checked=""/g) || []).length, 7)
     assert.match(html, /Character and speech bubbles/)
     assert.match(html, /Show character on mobile/)
     assert.match(html, /Intro on startup/)
@@ -1026,7 +1030,7 @@ test('settings page shows the update section and still works without the plugin 
     const html = renderToStaticMarkup(React.createElement(Page, { view: 'page' }))
     assert.match(html, /aria-label="Updates"/)
     assert.match(html, /Plugin manager is unavailable/)
-    assert.equal((html.match(/role="switch"/g) || []).length, 11)
+    assert.equal((html.match(/role="switch"/g) || []).length, 12)
     assert.match(html, /Extra dialogue/)
     ctx.dispose()
   } finally { h.dom.window.close() }
@@ -1135,7 +1139,7 @@ test('settings page shows the voice section without needing a YAML edit', () => 
     assert.match(html, /AI-generated voice/)
     assert.match(html, /credential store is unavailable/)
     assert.match(html, /type="password"/)
-    assert.equal((html.match(/role="switch"/g) || []).length, 11, 'feature, mobile, intro, icon, extra lines, korean mutters, auth cookie, sleep and canvas switches are present')
+    assert.equal((html.match(/role="switch"/g) || []).length, 12, 'feature, mobile, intro, icon, extra lines, korean mutters, auth cookie, sleep, shoulder grab and canvas switches are present')
     assert.match(html, /Extra dialogue/)
     ctx.dispose()
   } finally { h.dom.window.close() }

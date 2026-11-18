@@ -105,6 +105,7 @@ export const GEOMETRY = {
   headBottom: 0.3,        // 터치: 머리로 치는 아래 끝 (전신 높이 비율)
   chestBottom: 0.4,       // 터치: 가슴과 아랫배·허리 아래의 경계 (전신 높이 비율)
   coverArmBottom: 0.45,   // 터치: 가슴을 가린 팔을 가슴으로 치는 아래 끝 (전신 높이 비율)
+  shoulderBottom: 0.24,   // 어깨 손잡이: 팔 부위 중 이 높이보다 위(부푼 소매 윗부분)를 어깨로 봄 (전신 높이 비율, 팔 맨 위 ≈ 0.21)
   chestCenterX: 0.45,     // 터치: 가슴 타원 가운데 x (전신 폭 비율)
   chestCenterY: 0.295,    // 터치: 가슴 타원 가운데 y (전신 높이 비율)
   chestRadiusX: 0.13,     // 터치: 가슴 타원 가로 반지름 (전신 폭 비율)
