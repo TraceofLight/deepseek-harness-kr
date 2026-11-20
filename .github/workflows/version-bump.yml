@@ -1,0 +1,19 @@
+name: version-bump
+
+# 플러그인 설정 창의 업데이트 확인은 package.json version만 비교하므로,
+# 배포 파일을 바꾼 PR은 version을 올려야 설치한 사람에게 업데이트가 보인다.
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node tools/check-version-bump.mjs origin/${{ github.base_ref }}

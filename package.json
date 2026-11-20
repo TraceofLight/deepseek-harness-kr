@@ -41,7 +41,7 @@
   ],
   "scripts": {
     "build": "node plugin/build.mjs",
-    "test": "node --test plugin/test/*.test.js plugins/dsh-tts/test/*.test.js",
+    "test": "node --test plugin/test/*.test.js plugins/dsh-tts/test/*.test.js tools/test/*.test.js",
     "typecheck": "tsc -p tsconfig.json",
     "trace:diff": "node plugin/test/trace/harness.mjs --diff",
     "locales": "node plugin/locales.mjs report"

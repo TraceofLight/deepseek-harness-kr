@@ -254,6 +254,7 @@ npm test
 빌드된 `lib/client.js`와 `assets/`를 저장소에 포함하므로 Git 주소로 설치할 때 빌드 스크립트를 실행하지 않습니다.
 캐릭터 코드·번역·자산을 수정하면 `npm run build`를 실행하고 생성물도 함께 커밋하세요.
 사용자가 보게 되는 변경이면 `package.json`의 `version`도 올려 주세요. 플러그인(Plugins) 화면의 버전 표시로 새 버전인지 구분할 수 있습니다.
+설정 창의 업데이트 확인은 설치한 GitHub 브랜치의 `package.json` `version`만 설치본과 비교합니다. 배포 파일(`package.json`의 `files`)을 바꾸고 `version`을 그대로 두면 커밋이 새로 올라가도 업데이트가 보이지 않습니다. 기능 브랜치로 설치해 시험할 때도 push마다 `version`을 올려 주세요. `main` 대상 PR은 `node tools/check-version-bump.mjs origin/main` 검사(`.github/workflows/version-bump.yml`)가 이를 확인합니다.
 동작을 바꾸지 않는 리팩터링은 `npm run trace:diff -- <기준 커밋 체크아웃> [--pet]`으로 캐릭터 동작이 프레임마다 같은지 비교할 수 있습니다(기본 테스트에는 들어 있지 않음).
 
 ### 대사 수정
